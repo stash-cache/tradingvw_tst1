@@ -2,7 +2,7 @@
 
 ## Changelog
 
-### v5.3 — VWAP Daily+ Guard (#16)
+### v5.3 — VWAP Daily+ Guard (#16), Dead Code Removal (#17)
 
 **[#16] S5 Core: Guard VWAP on daily+ timeframes** — `ta.vwap(hlc3)` on daily+ timeframes does not return `na` on all data feeds. On some feeds it returns the bar's own `hlc3` (typical price), since there is only one bar per session. This makes `close > vwap_val` equivalent to `close > (high + low + close) / 3` — true roughly 50% of the time based on bar shape, producing noise-driven pullback entries via `pb_to_vwap_bull` / `pb_to_vwap_bear`. Worse than silent failure: garbage values generate garbage signals.
 
@@ -22,6 +22,8 @@ AVWAP (anchored VWAP from BOS) is NOT guarded — it anchors to structural event
 Intraday impact: Zero. `is_daily_plus = false` on intraday — guard is transparent, VWAP unchanged.
 
 R improvement: +0.5-1% on daily+ timeframes (eliminates noise entries from garbage VWAP values). 0R on intraday (no change). Pure signal quality improvement.
+
+**[#17] S17 State Machine: Remove dead `trade_mode` variable** — `var string trade_mode = "THIN"` was declared at L448 and assigned in 9 entry paths across the state machine (FIX-12 bull/bear retest, FIX-19 bull/bear displacement breakout, absorption LOADED, non-absorption micro, non-absorption retest, stalking absorption, stalking non-absorption). Zero reads existed anywhere — no conditional, no dashboard cell, no alert, no plotshape, no string concatenation. Created during v3.2 when the three-mode system (DEFAULT/THIN/ABSORPTION) was introduced, intending to tag each trade with its entry mode for mode-specific exit logic. That vision was implemented through `is_abs_trade` instead, making `trade_mode` redundant before it was ever connected downstream. Exhaustive search confirmed: `trade_mode` appeared only in write contexts (`=` or `:=`). Removal is purely subtractive — 10 lines deleted (1 declaration + 9 assignments), zero behavioral change. R improvement: 0R (dead code removal, no logic change).
 
 ### v5.2 — Absorption HTF Bias Fix (#15)
 
@@ -117,6 +119,8 @@ FIX-17 (EMA slope bypass for reversal signals in LOADED) has been reverted. The 
 // hlc3 (garbage) not na on daily bars — produces noise pullback entries.
 // Now: is_daily_plus ? na : ta.vwap(hlc3). Plot also guarded.
 // 4 of 5 pullback paths remain active on daily+. +0.5-1% R on daily+.
+// [#17] S17 State Machine: Removed dead trade_mode variable. 1 declaration +
+// 9 assignments, zero reads. Dead since v3.2 (is_abs_trade replaced it).
 //
 // v5.2 CHANGES:
 // [#15] S7 HTF / S12 Abs: Mutual exclusion for absorption HTF bias.
@@ -445,7 +449,7 @@ if i_mode_override != "AUTO"
 else
     effective_mode := detected_mode
 
-var string trade_mode = "THIN"
+// [v5.3 #17] trade_mode removed — declared + assigned 9 times, read zero times (dead code since v3.2)
 bool absorption_mode = effective_mode == "ABSORPTION"
 
 if i_mode_override != "AUTO"
@@ -1734,7 +1738,6 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
                 is_range_trade := false
                 is_abs_trade := false
                 in_trend_ride := false
-                trade_mode := effective_mode
                 float r_dist = math.abs(entry_price - stop_price)
                 tp1_price := entry_price + r_dist * i_tp1_ratio
                 tp2_price := drt_tgt
@@ -1761,7 +1764,6 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
                 is_range_trade := false
                 is_abs_trade := false
                 in_trend_ride := false
-                trade_mode := effective_mode
                 float r_dist = math.abs(entry_price - stop_price)
                 tp1_price := entry_price - r_dist * i_tp1_ratio
                 tp2_price := drt_tgt_b
@@ -1807,7 +1809,6 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
                 is_abs_trade := false
                 is_stalk_trade := false
                 in_trend_ride := false
-                trade_mode := effective_mode
                 float r_dist = math.abs(entry_price - stop_price)
                 tp1_price := entry_price + r_dist * i_tp1_ratio
                 tp2_price := dbk_tgt
@@ -1835,7 +1836,6 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
                 is_abs_trade := false
                 is_stalk_trade := false
                 in_trend_ride := false
-                trade_mode := effective_mode
                 float r_dist = math.abs(entry_price - stop_price)
                 tp1_price := entry_price - r_dist * i_tp1_ratio
                 tp2_price := dbk_tgt_b
@@ -1907,7 +1907,6 @@ if trade_state == 1 and bar_confirmed
                 is_abs_trade := true
                 is_range_trade := false
                 is_cont_trade := false
-                trade_mode := "ABSORPTION"
                 tp1_price := is_spring_e ? (trade_dir == 1 ? abs_spring_tp1_long : abs_upthrust_tp1_short) : (trade_dir == 1 ? entry_price + math.abs(entry_price - stop_price) * i_abs_tp1_r : entry_price - math.abs(entry_price - stop_price) * i_abs_tp1_r)
                 tp2_price := is_spring_e ? (trade_dir == 1 ? abs_spring_tp2_long : abs_upthrust_tp2_short) : abs_t2_e
                 partial_hit := false
@@ -1942,7 +1941,6 @@ if trade_state == 1 and bar_confirmed and not absorption_mode
             is_abs_trade := false
             is_range_trade := false
             is_cont_trade := false
-            trade_mode := effective_mode
             float r_dist = math.abs(entry_price - stop_price)
             tp1_price := trade_dir == 1 ? entry_price + r_dist * i_tp1_ratio : entry_price - r_dist * i_tp1_ratio
             tp2_price := tgt_dt
@@ -1967,7 +1965,6 @@ if trade_state == 1 and bar_confirmed and not absorption_mode
             is_range_trade := false
             is_cont_trade := false
             is_abs_trade := false
-            trade_mode := effective_mode
             float r_dist = math.abs(entry_price - stop_price)
             tp1_price := trade_dir == 1 ? entry_price + r_dist * i_tp1_ratio : entry_price - r_dist * i_tp1_ratio
             tp2_price := tgt_dt
@@ -2030,7 +2027,6 @@ if trade_state == 6 and bar_confirmed
                 is_range_trade := false
                 is_cont_trade := false
                 is_stalk_trade := true
-                trade_mode := "ABSORPTION"
                 tp1_price := trade_dir == 1 ? abs_spring_tp1_long : abs_upthrust_tp1_short
                 tp2_price := trade_dir == 1 ? abs_spring_tp2_long : abs_upthrust_tp2_short
                 partial_hit := false
@@ -2063,7 +2059,6 @@ if trade_state == 6 and bar_confirmed and not absorption_mode
             is_range_trade := false
             is_cont_trade := false
             is_stalk_trade := true
-            trade_mode := effective_mode
             float r_dist_s = math.abs(entry_price - stop_price)
             tp1_price := trade_dir == 1 ? entry_price + r_dist_s * 1.0 : entry_price - r_dist_s * 1.0
             tp2_price := stk_tgt
