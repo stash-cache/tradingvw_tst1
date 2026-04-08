@@ -2479,8 +2479,8 @@ if i_show_bg
 bgcolor(bg, title="State Background")
 
 // Entry signals
-plotshape(enter_long, "LONG", shape.triangleup, location.belowbar, color.new(color.lime,0), size=size.normal, text="LONG")
-plotshape(enter_short, "SHORT", shape.triangledown, location.abovebar, color.new(color.red,0), size=size.normal, text="SHORT")
+plotshape(enter_long and not enter_disp_long, "LONG", shape.triangleup, location.belowbar, color.new(color.lime,0), size=size.normal, text="LONG")
+plotshape(enter_short and not enter_disp_short, "SHORT", shape.triangledown, location.abovebar, color.new(color.red,0), size=size.normal, text="SHORT")
 plotshape(enter_range_long, "FADE L", shape.triangleup, location.belowbar, color.new(color.purple,0), size=size.normal, text="FADE\nLONG")
 plotshape(enter_range_short, "FADE S", shape.triangledown, location.abovebar, color.new(color.purple,0), size=size.normal, text="FADE\nSHORT")
 plotshape(enter_cont_long, "CONT L", shape.triangleup, location.belowbar, color.new(color.teal,0), size=size.normal, text="CONT\nLONG")
@@ -2999,9 +2999,7 @@ alertcondition(rev_bear, "◆ REV BEAR", "v5.0: Momentum reversal bear — sweep
 alertcondition(dist_bull, "◆ ACCUM BULL", "v5.0: Quiet accumulation — RSI div + declining vol at sellside (no sweep)")
 alertcondition(dist_bear, "◆ DIST BEAR", "v5.0: Quiet distribution — RSI div + declining vol at buyside (no sweep)")
 alertcondition(rsi_reg_bull_div, "RSI DIV BULL", "v5.0: Regular bullish RSI divergence — potential reversal")
-alertcondition(rsi_hid_bull_div, "hRSI BULL", "v5.0: Hidden bullish RSI divergence — continuation signal in uptrend")
 alertcondition(rsi_reg_bear_div, "RSI DIV BEAR", "v5.0: Regular bearish RSI divergence — potential reversal")
-alertcondition(rsi_hid_bear_div, "hRSI BEAR", "v5.0: Hidden bearish RSI divergence — continuation signal in downtrend")
 alertcondition(wyckoff_phase_c and not wyckoff_phase_c[1], "WYCKOFF C — SPRING", "v5.0: Wyckoff Phase C spring detected — high-conviction absorption entry zone")
 alertcondition(wyckoff_phase_d and not wyckoff_phase_d[1], "WYCKOFF D — BOS", "v5.0: Wyckoff Phase D BOS — accumulation confirming, markup beginning")
 alertcondition(wyckoff_phase_e and not wyckoff_phase_e[1], "WYCKOFF E — MARKUP", "v5.0: Wyckoff Phase E markup — price has left the range on volume")
@@ -3010,5 +3008,4 @@ alertcondition(supply_zone_fresh and not supply_zone_fresh[1], "SUPPLY ZONE FRES
 alertcondition(range_confirmed and not range_confirmed[1], "Range confirmed", "v5.0: switching to fade playbook")
 alertcondition(trend_confirmed and not trend_confirmed[1], "Trend confirmed", "v5.0: switching to displacement playbook")
 alertcondition(abs_no_edge and not abs_no_edge[1], "ABS NO EDGE", "v5.0: absorption mode killed — no edge after evaluation")
-alertcondition(bb_squeeze and absorption_mode and abs_valid_range, "ABSORB + SQUEEZE", "v5.0: Absorption mode active with BB squeeze — Phase B compression confirmed")
 ```
