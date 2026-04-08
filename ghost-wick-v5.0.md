@@ -2514,14 +2514,10 @@ if i_show_labels
     if dist_bear and not rev_bear
         label.new(bar_index, high + adaptive_atr*1.1, "DIST↓", color=color.new(color.red,30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
 
-// [NEW-2] RSI Divergence labels
+// [NEW-2] RSI Divergence labels — hidden RSI only (regular RSI DIV labels removed to reduce chart noise)
 if i_show_labels and i_rsi_div_enabled
-    if rsi_reg_bull_div
-        label.new(bar_index, low - adaptive_atr*0.9, "RSI DIV↑", color=color.new(color.lime,40), textcolor=color.white, size=size.tiny, style=label.style_label_up)
     if rsi_hid_bull_div
         label.new(bar_index, low - adaptive_atr*0.7, "hRSI↑", color=color.new(color.lime,60), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-    if rsi_reg_bear_div
-        label.new(bar_index, high + adaptive_atr*0.9, "RSI DIV↓", color=color.new(salmon,40), textcolor=color.white, size=size.tiny, style=label.style_label_down)
     if rsi_hid_bear_div
         label.new(bar_index, high + adaptive_atr*0.7, "hRSI↓", color=color.new(salmon,60), textcolor=color.white, size=size.tiny, style=label.style_label_down)
 
@@ -2998,8 +2994,8 @@ alertcondition(rev_bull, "◆ REV BULL", "v5.0: Momentum reversal bull — sweep
 alertcondition(rev_bear, "◆ REV BEAR", "v5.0: Momentum reversal bear — sweep + RVOL at buyside liquidity")
 alertcondition(dist_bull, "◆ ACCUM BULL", "v5.0: Quiet accumulation — RSI div + declining vol at sellside (no sweep)")
 alertcondition(dist_bear, "◆ DIST BEAR", "v5.0: Quiet distribution — RSI div + declining vol at buyside (no sweep)")
-alertcondition(rsi_reg_bull_div, "RSI DIV BULL", "v5.0: Regular bullish RSI divergence — potential reversal")
-alertcondition(rsi_reg_bear_div, "RSI DIV BEAR", "v5.0: Regular bearish RSI divergence — potential reversal")
+alertcondition(rsi_hid_bull_div, "hRSI BULL", "v5.0: Hidden bullish RSI divergence — continuation signal in uptrend")
+alertcondition(rsi_hid_bear_div, "hRSI BEAR", "v5.0: Hidden bearish RSI divergence — continuation signal in downtrend")
 alertcondition(wyckoff_phase_c and not wyckoff_phase_c[1], "WYCKOFF C — SPRING", "v5.0: Wyckoff Phase C spring detected — high-conviction absorption entry zone")
 alertcondition(wyckoff_phase_d and not wyckoff_phase_d[1], "WYCKOFF D — BOS", "v5.0: Wyckoff Phase D BOS — accumulation confirming, markup beginning")
 alertcondition(wyckoff_phase_e and not wyckoff_phase_e[1], "WYCKOFF E — MARKUP", "v5.0: Wyckoff Phase E markup — price has left the range on volume")
