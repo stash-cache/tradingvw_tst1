@@ -2,7 +2,7 @@
 
 ## Changelog
 
-### v5.4 — Upthrust Volume Gate (#18a), Wyckoff Phase C Distribution (#18b)
+### v5.4 — Upthrust Volume Gate (#18a), Wyckoff Phase C Distribution (#18b), Alert Consolidation (#19)
 
 **[#18a] S12 Absorption: Add volume gate to upthrust detection** — `abs_spring_detected` (L1071) requires `abs_spring_volume` (volume > 80% of 20-bar SMA), but its mirror `abs_upthrust_detected` (L1076) had no volume check at all. This is a v3.2 oversight from the mirror copy — spring got 6 conditions, upthrust got 5. The asymmetry allowed low-volume noise pokes above range resistance to qualify as institutional upthrusts, generating false short entries.
 
@@ -38,6 +38,24 @@ Note: `wyckoff_phase_c_dist` inherits the #18a volume gate automatically — `ab
 Wyckoff phases D and E remain bull-only (accumulation markup). Distribution equivalents for D/E would require separate fix items — they use `bos_bull`, `abs_higher_lows`, and `abs_price_breakout_long` which need bear mirrors not currently present in the codebase.
 
 R improvement: +0.5-1% on absorption short entries. The probability scoring symmetry allows bear conviction to clear `conviction_ok` in scenarios where spring conviction would have cleared but upthrust couldn't.
+
+**[#19] S23 Alerts: Reduce alertconditions from 35 to 16** — Pine Script v6 counts `alertcondition()` toward the 64 plot-output limit alongside `plot()`, `plotshape()`, and `bgcolor()`. Total output count was 65 (28 visual + 35 alert + 2 internal), exceeding the 64 limit and causing a runtime error.
+
+Removed 19 confirmatory/environmental/regime alertconditions:
+- State transitions: ◎ LOADED, ⊙ STALKING (precursors — entry alerts already fire when these resolve)
+- Environmental: ◆ BB SQUEEZE START, ◆ BB SQUEEZE BREAKOUT (chart bgcolor + BB plots already show these)
+- Catalysts: ◆ REV BULL, ◆ REV BEAR, ◆ ACCUM BULL, ◆ DIST BEAR (feed probability scoring internally — labels remain on chart)
+- Divergences: hRSI BULL, hRSI BEAR (continuation confirmations — labels remain on chart)
+- Wyckoff: WYCKOFF C SPRING, WYCKOFF C UPTHRUST, WYCKOFF D BOS, WYCKOFF E MARKUP (labels remain on chart; spring/upthrust feed ABSORB LONG/SHORT alerts)
+- Zones: DEMAND ZONE FRESH, SUPPLY ZONE FRESH (box visuals remain on chart)
+- Regime: Range confirmed, Trend confirmed (dashboard shows regime)
+- Defensive: ABS NO EDGE (informational only)
+
+Retained 16 standalone execution alerts: all 10 entry types (LONG, SHORT, FADE L/S, CONT L/S, DISP L/S, ABSORB L/S), 3 trade management (TP1 HIT, OBV EXIT, REV EXIT), RE-ENTRY, and 2 result (WIN, EXIT).
+
+All removed signals retain their chart visuals (labels, bgcolor, plotshapes, BB plots, boxes). Only the TradingView alert dropdown entries are removed — no chart or logic change.
+
+New plot output count: 44 (28 visual + 16 alert). 20 slots of headroom under the 64 limit.
 
 ### v5.3 — VWAP Daily+ Guard (#16), Dead Code Removal (#17)
 
@@ -160,6 +178,9 @@ FIX-17 (EMA slope bypass for reversal signals in LOADED) has been reverted. The 
 // Mirrors wyckoff_phase_c (spring) — wired into probability (sp += 0.08),
 // phase string ("C:UPTHRUST"), label ("W:C↓"), dashboard color, and alert.
 // Fixes bear probability structural disadvantage in absorption mode. +0.5-1% R.
+// [#19] S23 Alerts: Reduced alertconditions from 35 to 16. Removed 19
+// confirmatory/environmental/regime alerts. Resolves 65→44 plot output limit.
+// Retained: all standalone entries, trade management, and result alerts.
 //
 // v5.3 CHANGES:
 // [#16] S5 Core: Guard VWAP on daily+ timeframes. ta.vwap() returns
@@ -3107,8 +3128,10 @@ if barstate.islast
 // SECTION 23 — ALERTS
 // ═══════════════════════════════════════════════════════════
 
-alertcondition(enter_loaded, "◎ LOADED", "v5.4: loaded at liquidity level")
-alertcondition(enter_stalk, "⊙ STALKING", "v5.4: stalking — pre-HTF loaded at reversal zone")
+// [v5.4 #19] Reduced from 35 to 16 alertconditions — removed 19 confirmatory/environmental/regime
+// alerts (LOADED, STALKING, BB SQUEEZE x2, REV x2, ACCUM/DIST x2, hRSI x2, WYCKOFF x4,
+// ZONE FRESH x2, REGIME x2, ABS NO EDGE). Retained: all standalone execution entries, trade
+// management, and result alerts. Resolves "too many plots" runtime error (65 → 44 plot outputs).
 alertcondition(enter_long, "◉ LONG", "v5.4: trend long entry")
 alertcondition(enter_short, "◉ SHORT", "v5.4: trend short entry")
 alertcondition(enter_range_long, "◉ FADE LONG", "v5.4: range fade long")
@@ -3125,22 +3148,4 @@ alertcondition(rev_exit_fired, "◈ REV EXIT", "v5.4: Reversal exit — REV + RS
 alertcondition(retest_reentry, "◉ RE-ENTRY", "v5.4: retest re-entry at structural zone")
 alertcondition(exit_win, "✓ WIN", "v5.4: trade closed in profit")
 alertcondition(exit_loss, "✗ EXIT", "v5.4: stopped or invalidated")
-alertcondition(bb_squeeze and not bb_squeeze[1], "◆ BB SQUEEZE START", "v5.4: Bollinger Band squeeze active — compression phase detected")
-alertcondition(bb_expanding and not bb_expanding[1] and bb_squeeze_ctx, "◆ BB SQUEEZE BREAKOUT", "v5.4: BB squeeze expanding — breakout imminent")
-alertcondition(rev_bull, "◆ REV BULL", "v5.4: Momentum reversal bull — sweep + RVOL at sellside liquidity")
-alertcondition(rev_bear, "◆ REV BEAR", "v5.4: Momentum reversal bear — sweep + RVOL at buyside liquidity")
-alertcondition(dist_bull, "◆ ACCUM BULL", "v5.4: Quiet accumulation — RSI div + declining vol at sellside (no sweep)")
-alertcondition(dist_bear, "◆ DIST BEAR", "v5.4: Quiet distribution — RSI div + declining vol at buyside (no sweep)")
-alertcondition(rsi_hid_bull_div, "hRSI BULL", "v5.4: Hidden bullish RSI divergence — continuation signal in uptrend")
-alertcondition(rsi_hid_bear_div, "hRSI BEAR", "v5.4: Hidden bearish RSI divergence — continuation signal in downtrend")
-alertcondition(wyckoff_phase_c and not wyckoff_phase_c[1], "WYCKOFF C — SPRING", "v5.4: Wyckoff Phase C spring detected — high-conviction absorption entry zone")
-// [v5.4 #18b] Phase C distribution alert — mirrors spring alert
-alertcondition(wyckoff_phase_c_dist and not wyckoff_phase_c_dist[1], "WYCKOFF C — UPTHRUST", "v5.4: Wyckoff Phase C upthrust detected — high-conviction absorption short entry zone")
-alertcondition(wyckoff_phase_d and not wyckoff_phase_d[1], "WYCKOFF D — BOS", "v5.4: Wyckoff Phase D BOS — accumulation confirming, markup beginning")
-alertcondition(wyckoff_phase_e and not wyckoff_phase_e[1], "WYCKOFF E — MARKUP", "v5.4: Wyckoff Phase E markup — price has left the range on volume")
-alertcondition(demand_zone_fresh and not demand_zone_fresh[1], "DEMAND ZONE FRESH TOUCH", "v5.4: Fresh demand zone first touch — highest-quality institutional level")
-alertcondition(supply_zone_fresh and not supply_zone_fresh[1], "SUPPLY ZONE FRESH TOUCH", "v5.4: Fresh supply zone first touch — highest-quality institutional level")
-alertcondition(range_confirmed and not range_confirmed[1], "Range confirmed", "v5.4: switching to fade playbook")
-alertcondition(trend_confirmed and not trend_confirmed[1], "Trend confirmed", "v5.4: switching to displacement playbook")
-alertcondition(abs_no_edge and not abs_no_edge[1], "ABS NO EDGE", "v5.4: absorption mode killed — no edge after evaluation")
 ```
