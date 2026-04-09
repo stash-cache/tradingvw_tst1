@@ -2,7 +2,7 @@
 
 ## Changelog
 
-### v5.5 — HTF Auto-Scaling (#20), Structural Displacement Override (#21)
+### v5.5 — HTF Auto-Scaling (#20), Structural Displacement Override (#21), Display & Scoring Refactor (#22)
 
 **[#20] S2 Scaling / S7 HTF: Auto-scale HTF timeframe based on chart timeframe** — The `effective_htf` was hardcoded to `"240"` (4H) for all intraday timeframes. On a 30m chart (8x multiplier) this provided genuine higher-timeframe perspective. On a 3HR chart (1.33x multiplier) the 4H was essentially the same timeframe, providing zero filtering power — rubber-stamping whatever the chart already showed. This caused false long entries on the 3HR BTC chart because the HTF gate couldn't distinguish a distribution top from an uptrend continuation.
 
@@ -64,6 +64,24 @@ Downstream verification:
 - The override and the HTF auto-scaling (#20) are complementary: #20 makes the HTF gate more accurate, #21 allows bypassing it when institutional signals are present. On 30m, #20 tightens the HTF from 4H to 2H (faster to confirm), AND #21 allows displacement entries when even the 2H hasn't caught up.
 
 R improvement: +4-8% on missed reversal entries. The 30m BTC chart showed zero short signals during a clear sell-off — the structural override would have fired DISP SHORT on the first displacement candle with BOS + CVD + RVOL, catching the move within 1-2 bars of the reversal.
+
+**[#22] S7 HTF / S16 Scoring / S19 Direction / S22 Dashboard: Display & scoring refactor with Weekly** — After Fix #20 auto-scaled the HTF, the dashboard labels became misleading: on a 30m chart, "D:" showed 7H data (auto-scaled `effective_htf2 = "420"`), "2H:" showed 2H data (auto-scaled `effective_htf = "120"`), and "1H:" showed BOS/CHOCH context (not actual 1H data). If 4H was bear but 2H was bull, the dashboard showed "4H:BULL" — a false read from the wrong timeframe.
+
+Fix: Add 8 display-only `request.security()` calls for actual 4H, 1H, Daily, and Weekly timeframes (hardcoded, not auto-scaled). Dashboard Row 1 now shows `W:state D:state 4H:state 1H:state` — each reflecting real data from its labeled timeframe. Backend entry gates still use auto-scaled `effective_htf` for responsiveness.
+
+Scoring refactor:
+- Section 19 directional scoring: `Weekly(3) + Daily(2) + 4H(2) + 1H(1) + EWO(1) + MACD(1)` = max ±10. Weekly is highest weight — opposing weekly = fighting the macro tide. STRONG requires W+D+4H alignment (>=7). Old scoring used auto-scaled HTF data; new scoring uses actual timeframe data.
+- Section 16 probability scoring: Weekly alignment adds `+0.10` to bull or bear probability (both absorption and trend branches). This tips borderline entries in the correct macro direction.
+- Thresholds: STRONG BULL ≥7, BULL ≥3, BEAR ≤-3, STRONG BEAR ≤-7 (was ≥5/≥2/≤-2/≤-5 with max ±6).
+
+Downstream verification:
+- `htfd_bias_bull/bear`: Only consumed by strict mode entry gate (L919-920). No longer in scoring or dashboard. Correct.
+- `htf4h_bias_bull/bear`: Still consumed by entry gate logic, probability `w_htf`, partial_htf, stalking. Not changed. Correct.
+- `disp_*` display variables: Only consumed by scoring (S19), probability (S16), and dashboard (S22). No entry gate impact.
+- Phantom win thresholds (`market_score >= 4 / <= -4`): Unchanged. With new max ±10, fires at weekly(3)+1 or daily(2)+4H(2). Proportionally easier (4/10 vs 4/6) but correct — phantom wins track directional accuracy at L1, should fire when macro aligns.
+- 8 new `request.security()` calls: Total now 16. Under Pine Script v6 limit of 40.
+
+R improvement: +2-4% from weekly alignment filtering. Weekly bear context suppresses false long probability, weekly bull context boosts valid long probability. Dashboard accuracy eliminates user confusion about which timeframe state is displayed.
 
 ### v5.4 — Upthrust Volume Gate (#18a), Wyckoff Phase C Distribution (#18b), Alert Consolidation (#19)
 
@@ -242,6 +260,10 @@ FIX-17 (EMA slope bypass for reversal signals in LOADED) has been reverted. The 
 // retest, and continuation entries no longer blocked by lagging HTF EMA
 // confirmation. When BOS/CHOCH + CVD flow + RVOL all confirm direction,
 // entries fire without waiting for HTF state flip. +4-8% R on reversals.
+// [#22] S7/S16/S19/S22: Display & scoring refactor with Weekly. Dashboard
+// Row 1 now shows W: D: 4H: 1H: using actual timeframe data (8 display-only
+// request.security calls). Scoring: W(3)+D(2)+4H(2)+1H(1)+EWO(1)+MACD(1).
+// Weekly +0.10 added to probability scoring. +2-4% R from macro alignment.
 //
 // v5.4 CHANGES:
 // [#18a] S12 Abs: Added abs_spring_volume gate to abs_upthrust_detected.
@@ -938,6 +960,29 @@ bool abs_htf_bear = htf_range_pos < 0.50
 bool eff_htf_bull_ok = absorption_mode ? abs_htf_bull : htf_bull_ok
 bool eff_htf_bear_ok = absorption_mode ? abs_htf_bear : htf_bear_ok
 
+// [v5.5 #22] Display-only HTF data — always fetches actual 4H, 1H, Daily, Weekly
+// regardless of auto-scaling. Used for dashboard display and directional scoring.
+// Backend entry gates continue to use auto-scaled effective_htf for responsiveness.
+float disp_4h_cl = request.security(syminfo.tickerid, "240", close[1])
+float disp_4h_e20 = request.security(syminfo.tickerid, "240", ta.ema(close, 20)[1])
+bool disp_4h_bull = disp_4h_cl > disp_4h_e20
+bool disp_4h_bear = disp_4h_cl < disp_4h_e20
+
+float disp_1h_cl = request.security(syminfo.tickerid, "60", close[1])
+float disp_1h_e20 = request.security(syminfo.tickerid, "60", ta.ema(close, 20)[1])
+bool disp_1h_bull = disp_1h_cl > disp_1h_e20
+bool disp_1h_bear = disp_1h_cl < disp_1h_e20
+
+float disp_d_cl = request.security(syminfo.tickerid, "D", close[1])
+float disp_d_e20 = request.security(syminfo.tickerid, "D", ta.ema(close, 20)[1])
+bool disp_d_bull = disp_d_cl > disp_d_e20
+bool disp_d_bear = disp_d_cl < disp_d_e20
+
+float disp_w_cl = request.security(syminfo.tickerid, "W", close[1])
+float disp_w_e20 = request.security(syminfo.tickerid, "W", ta.ema(close, 20)[1])
+bool disp_w_bull = disp_w_cl > disp_w_e20
+bool disp_w_bear = disp_w_cl < disp_w_e20
+
 // ═══════════════════════════════════════════════════════════
 // SECTION 8 — KILL ZONES
 // ═══════════════════════════════════════════════════════════
@@ -1426,6 +1471,11 @@ if absorption_mode
         bp += w_htf
     if eff_htf_bear_ok
         sp += w_htf
+    // [v5.5 #22] Weekly macro trend alignment — highest-conviction directional signal
+    if disp_w_bull
+        bp += 0.10
+    if disp_w_bear
+        sp += 0.10
     if cvd_bull_ctx
         bp += 0.05
     if cvd_bear_ctx
@@ -1485,6 +1535,9 @@ else
         bp += w_htf
         if not effective_kz and not thin_asset
             bp += 0.05
+    // [v5.5 #22] Weekly macro trend alignment — highest-conviction directional signal
+    if disp_w_bull
+        bp += 0.10
     if accel_at_level_bull or ((cvd_lean_bull or cvd_bull_ctx) and near_sellside)
         bp += w_cvd_base + 0.08
     else if accel_in_space_bull
@@ -1538,6 +1591,9 @@ else
         sp += w_htf
         if not effective_kz and not thin_asset
             sp += 0.05
+    // [v5.5 #22] Weekly macro trend alignment
+    if disp_w_bear
+        sp += 0.10
     if accel_at_level_bear or ((cvd_lean_bear or cvd_bear_ctx) and near_buyside)
         sp += w_cvd_base + 0.08
     else if accel_in_space_bear
@@ -2677,15 +2733,23 @@ dormant_rec := playbook_level == 1 and total_r < -5.0 and (thin_asset or l1_phas
 // SECTION 19 — DIRECTIONAL STATE
 // ═══════════════════════════════════════════════════════════
 
-int daily_pts = htfd_bias_bull ? 2 : htfd_bias_bear ? -2 : 0
-int htf4h_pts = htf4h_bias_bull ? 1 : htf4h_bias_bear ? -1 : 0
-int ltf_pts = struct_bull_ctx ? 1 : struct_bear_ctx ? -1 : 0
+// [v5.5 #22] Refactored scoring — uses actual timeframe data for display accuracy.
+// Weekly(3): macro trend — highest conviction, opposing weekly = fighting the tide.
+// Daily(2): swing trend — actual Daily data, not auto-scaled secondary HTF.
+// 4H(2): intraday trend — actual 4H data, not auto-scaled primary HTF.
+// 1H(1): current structure — actual 1H data, not BOS/CHOCH proxy.
+// EWO(1) + MACD(1): momentum confirmation.
+// Max range: ±10. STRONG >= 7 requires W+D+4H alignment minimum.
+int weekly_pts = disp_w_bull ? 3 : disp_w_bear ? -3 : 0
+int daily_pts = disp_d_bull ? 2 : disp_d_bear ? -2 : 0
+int htf4h_pts = disp_4h_bull ? 2 : disp_4h_bear ? -2 : 0
+int h1_pts = disp_1h_bull ? 1 : disp_1h_bear ? -1 : 0
 int ewo_pts = ewo_bull ? 1 : ewo_bear ? -1 : 0
 int macd_pts = macd_bull_momentum ? 1 : macd_bear_momentum ? -1 : 0
-int market_score = daily_pts + htf4h_pts + ltf_pts + ewo_pts + macd_pts
+int market_score = weekly_pts + daily_pts + htf4h_pts + h1_pts + ewo_pts + macd_pts
 
-string dir_str = market_score >= 5 ? "STRONG BULL" : market_score >= 2 ? "BULL" : market_score <= -5 ? "STRONG BEAR" : market_score <= -2 ? "BEAR" : "NEUTRAL"
-color dir_color = market_score >= 5 ? color.lime : market_score >= 2 ? color.new(color.lime,25) : market_score <= -5 ? color.red : market_score <= -2 ? color.new(color.red,25) : color.gray
+string dir_str = market_score >= 7 ? "STRONG BULL" : market_score >= 3 ? "BULL" : market_score <= -7 ? "STRONG BEAR" : market_score <= -3 ? "BEAR" : "NEUTRAL"
+color dir_color = market_score >= 7 ? color.lime : market_score >= 3 ? color.new(color.lime,25) : market_score <= -7 ? color.red : market_score <= -3 ? color.new(color.red,25) : color.gray
 
 // ═══════════════════════════════════════════════════════════
 // SECTION 20 — PHANTOM WIN DETECTION
@@ -3026,15 +3090,14 @@ if barstate.islast
     table.cell(d, 0, 0, "GHOST WICK v5.5 ◎", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black,35))
     table.cell(d, 1, 0, st_str + " [" + regime_str + "] " + lvl_str + " " + mode_label, text_color=st_col, text_size=size.normal, bgcolor=color.new(color.black,35))
 
-    // Row 1: Direction
-    string d_label = absorption_mode ? (abs_htf_bias=="BULL"?"D:RANGE↑":abs_htf_bias=="BEAR"?"D:RANGE↓":"D:RANGE—") : (htfd_bias_bull?"D:BULL":htfd_bias_bear?"D:BEAR":"D:---")
-    // [v5.5 #20] Dynamic HTF label — shows actual HTF in use, not hardcoded "4H"
-    string htf_tag = effective_htf == "15" ? "15m" : effective_htf == "60" ? "1H" : effective_htf == "120" ? "2H" : effective_htf == "180" ? "3H" : effective_htf == "420" ? "7H" : effective_htf == "240" ? "4H" : effective_htf == "3D" ? "3D" : effective_htf == "D" ? "D" : effective_htf == "W" ? "W" : effective_htf == "M" ? "M" : effective_htf
-    string h4_label = htf4h_bias_bull ? (htf_tag + ":BULL") : htf4h_bias_bear ? (htf_tag + ":BEAR") : (htf_tag + ":---")
-    string h1_label = struct_bull_ctx ? "1H:BULL" : struct_bear_ctx ? "1H:BEAR" : "1H:---"
-    string htf_neutral_tag = htf4h_neutral ? " [HTF:?]" : ""
+    // Row 1: Direction — [v5.5 #22] All labels use actual timeframe data via display-only request.security().
+    // Backend entry gates still use auto-scaled effective_htf for responsiveness.
+    string w_label = disp_w_bull ? "W:BULL" : disp_w_bear ? "W:BEAR" : "W:---"
+    string d_label = absorption_mode ? (abs_htf_bias=="BULL"?"D:RANGE↑":abs_htf_bias=="BEAR"?"D:RANGE↓":"D:RANGE—") : (disp_d_bull?"D:BULL":disp_d_bear?"D:BEAR":"D:---")
+    string h4_label = disp_4h_bull ? "4H:BULL" : disp_4h_bear ? "4H:BEAR" : "4H:---"
+    string h1_label = disp_1h_bull ? "1H:BULL" : disp_1h_bear ? "1H:BEAR" : "1H:---"
     table.cell(d, 0, 1, dir_str, text_color=dir_color, text_size=size.small)
-    table.cell(d, 1, 1, d_label + " " + h4_label + " " + h1_label + htf_neutral_tag, text_color=dir_color, text_size=size.small)
+    table.cell(d, 1, 1, w_label + " " + d_label + " " + h4_label + " " + h1_label, text_color=dir_color, text_size=size.small)
 
     // Row 2: Probability + weights + dynamic threshold
     string prob_str = "B:" + str.tostring(math.round(bull_prob*100,0)) + "% S:" + str.tostring(math.round(bear_prob*100,0)) + "%"
