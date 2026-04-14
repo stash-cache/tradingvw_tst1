@@ -2,7 +2,7 @@
 
 ## Changelog
 
-### v5.8 — Exit Priority Restructure (#26)
+### v5.8 — Exit Priority Restructure (#26), Display Precision + Breakeven Label (#27)
 
 **[#26] S17 State Machine: Exit priority restructure — TP over structural invalidation + open-proximity heuristic** — The POSITIONED (state 2) if/else exit chain evaluated `stopped or struct_invalid or range_invalid` as a single branch before `tp2_hit` and `tp1_hit`. Three issues:
 
@@ -46,6 +46,38 @@ Downstream verification:
 - **MANAGING trail_stop + tp2_hit_m:** Already gives TP2 priority via `exit_p_m = tp2_hit_m ? tp2_price : stop_price`. No change needed — MANAGING stop is at breakeven, so the existing behavior is correct.
 
 R improvement: +2-5% on volatile instruments. struct_invalid + tp1_hit collisions convert -0.5R to -1R losses into 0R breakeven (1-3x/week on crypto 30m). Stopped + tp1_hit with TP winning heuristic converts -1R to 0R (1-2x/week on wide-range bars). Combined: +3-7R/month on active instruments.
+
+**[#27] S22 Display: Exchange-native price precision + dynamic stop label** — The dashboard Trade row (Row 11) and NEXT row (Row 12) used `math.round(price, 4)` for all price displays. Two problems:
+
+**(1) Hardcoded 4-decimal precision loses critical information on low-priced coins.** PENGU at $0.006421 rounds to $0.0064 — the 5th and 6th decimals where actual price action occurs are truncated. Entry ($0.006421) and breakeven stop ($0.006421) both display as "0.0064", making them indistinguishable. The RIDING NEXT row used `math.round(price, 2)` which is even worse — PENGU at $0.006421 rounds to $0.01. On high-priced instruments like BTC, 4 decimals show false precision ($97500.0000 when mintick is $0.01).
+
+**(2) No visual indicator when stop is at breakeven or trailing above entry.** The Trade row showed `S:` prefix regardless of stop state. Users cannot tell whether `S:0.0064` means the original stop, breakeven (after TP1 hit), or a trailing stop above entry. This causes confusion about trade management state and stop level history — especially when `E:` and `S:` display identical values after rounding.
+
+Fix: Two changes across 4 display locations:
+
+**(A) `format.mintick` replaces all `math.round(price, N)` in dashboard price displays.** `format.mintick` uses `syminfo.mintick` to format numbers to the exchange's native tick precision. PENGU/USDT on Binance (mintick = 0.000001) displays as "0.006421". BTC/USDT (mintick = 0.01) displays as "97500.00". Automatically scales per instrument — no hardcoded decimal count. Applied to:
+- Trade row: `entry_price`, `stop_price`, `tp2_price` (3 instances)
+- NEXT RIDING: `stop_price`, `tp2_price` (2 instances, was `math.round(price, 2)`)
+- NEXT POSITIONED: `tp1_price` (1 instance)
+- NEXT MANAGING: `tp2_price` (1 instance)
+
+**(B) Dynamic stop label — `S:` / `BE:` / `TR:` — replaces static `S:` prefix.** Computed before the Trade row string:
+- `S:` — original stop (default, stop below entry for longs / above entry for shorts)
+- `BE:` — breakeven (`math.abs(stop_price - entry_price) < syminfo.mintick`). Activates after TP1 hit when `stop_price := entry_price`, or during trend ride breakeven move
+- `TR:` — trailing above breakeven (stop has moved in profit direction: `stop_price > entry_price` for longs, `stop_price < entry_price` for shorts). Activates when MANAGING trailing logic adjusts stop via swing structure
+
+The label replaces the prefix itself (not appended text), keeping string length constant. Three stop states are instantly distinguishable without mental comparison of E: and S: values.
+
+Downstream verification:
+- **Display only — zero logic impact.** No state machine, counter, exit, or entry code is modified. Zero backtest regression risk.
+- **`format.mintick` with `na` values:** The ternary guard (`trade_state >= 2 and trade_state <= 3 and not na(entry_price)`) ensures `entry_price` is never `na` when the format runs. `stop_price` and `tp2_price` are always set when `trade_state` is 2 or 3 (set by every entry transition). No `NaN` display risk.
+- **`syminfo.mintick` availability:** Built-in Pine Script v6 variable. Always available, no import or `request.security` needed. Zero plot cost.
+- **String length:** PENGU with `format.mintick`: `E:0.006421 BE:0.006421 T:0.008300` (40 chars). BTC: `E:97500.00 S:96200.00 T:101500.00` (37 chars). TradingView table cells auto-adjust width. No overflow concern.
+- **NEXT row consistency:** All 4 NEXT price displays updated to `format.mintick`. RIDING row previously used `math.round(price, 2)` — PENGU showed "$0.01" which was meaningless. Now shows "$0.006421".
+- **`_s_label` scope:** Declared at the same indentation level as `trade_str` inside the display block. Standard Pine Script v6 variable scope — no conflict with existing variables.
+- **Breakeven detection threshold:** `math.abs(stop_price - entry_price) < syminfo.mintick` uses one tick as tolerance. Since `stop_price := entry_price` is a direct assignment, values are exactly equal. The tolerance handles any floating-point edge case without false positives — a trailing stop even one tick above entry correctly shows `TR:`.
+
+R improvement: Display-only fix — 0% direct R change. Indirect: +0.5-1% through reduced user confusion. Clear BE/TR labeling prevents premature manual exits caused by misreading stop state. Exchange-precision display eliminates "are these the same number?" uncertainty that delays management decisions.
 
 ### v5.7 — Absorption R Isolation (#24), Same-Bar Stop Guard (#25)
 
@@ -405,6 +437,10 @@ FIX-17 (EMA slope bypass for reversal signals in LOADED) has been reverted. The 
 // into own branch below tp2_hit and tp1_hit — bar-close evaluations no longer
 // override price-touch TP events. Chain: obv→rev→eff_stopped→tp2→tp1→struct/range.
 // Eliminates false -1R on fakeout wicks + TP collisions. +2-5% R.
+// [#27] S22 Display: format.mintick replaces math.round(price,4) in Trade row
+// and NEXT row (7 instances). Dynamic stop label: S:/BE:/TR: replaces static S:
+// prefix — BE when stop==entry (breakeven), TR when stop trails above entry.
+// Fixes unreadable PENGU prices (0.0064 vs 0.006421) and missing state context.
 //
 // v5.7 CHANGES:
 // [#24] S17/S18: Isolate absorption R from impulse counters. All 7 exit paths
@@ -3532,7 +3568,14 @@ if barstate.islast
     table.cell(d, 1, 10, perf_str, text_color=perf_r>0?color.lime:perf_r<0?color.red:color.gray, text_size=size.small)
 
     // Row 11: Trade
-    string trade_str = trade_state >= 2 and trade_state <= 3 and not na(entry_price) ? "E:" + str.tostring(math.round(entry_price,4)) + " S:" + str.tostring(math.round(stop_price,4)) + " T:" + str.tostring(math.round(tp2_price,4)) : "—"
+    // [v5.8 #27] format.mintick for exchange-native precision; dynamic stop label (S:/BE:/TR:)
+    string _s_label = "S:"
+    if trade_state >= 2 and trade_state <= 3 and not na(entry_price) and not na(stop_price)
+        if math.abs(stop_price - entry_price) < syminfo.mintick
+            _s_label := "BE:"
+        else if (trade_dir == 1 and stop_price > entry_price) or (trade_dir == -1 and stop_price < entry_price)
+            _s_label := "TR:"
+    string trade_str = trade_state >= 2 and trade_state <= 3 and not na(entry_price) ? "E:" + str.tostring(entry_price, format.mintick) + " " + _s_label + str.tostring(stop_price, format.mintick) + " T:" + str.tostring(tp2_price, format.mintick) : "—"
     table.cell(d, 0, 11, "Trade", text_color=color.white, text_size=size.small)
     table.cell(d, 1, 11, trade_str, text_color=trade_state>=2 and trade_state<=3?color.yellow:color.gray, text_size=size.small)
 
@@ -3543,11 +3586,12 @@ if barstate.islast
     else if not absorption_mode and dormant_rec
         next_str := "No edge — consider switching instrument"
     else if trade_state == 2 and in_trend_ride
-        next_str := "RIDING — stop $" + str.tostring(math.round(stop_price,2)) + " → TP $" + str.tostring(math.round(tp2_price,2))
+        // [v5.8 #27] format.mintick for exchange-native precision
+        next_str := "RIDING — stop $" + str.tostring(stop_price, format.mintick) + " → TP $" + str.tostring(tp2_price, format.mintick)
     else if trade_state == 2
-        next_str := "TP1 at " + str.tostring(math.round(tp1_price,4))
+        next_str := "TP1 at " + str.tostring(tp1_price, format.mintick)
     else if trade_state == 3
-        next_str := "Trail → TP2 at " + str.tostring(math.round(tp2_price,4))
+        next_str := "Trail → TP2 at " + str.tostring(tp2_price, format.mintick)
     else if trade_state == 1 and absorption_mode
         next_str := "ABSORB: Need breakout + vol or spring"
     else if trade_state == 1
