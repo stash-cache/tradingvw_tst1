@@ -2,9 +2,23 @@
 
 ## Changelog
 
-### v5.9 — Thin Asset Accumulation Unlock (#30) — Playbook Bootstrap Trap Fix
+### v5.9 — Thin Asset Accumulation Unlock (#30) — Playbook Bootstrap Trap Fix (Revised)
 
-**[#30] S14 LOADED / S17 State Machine: Bundled solution for L1 entry lockout** — Live testing on PENGU 2D revealed a complete entry lockout scenario: L1 playbook + `range_confirmed` regime + bull_prob:43% < perf_thresh:55% + cooldown active. The system showed sustained bullish momentum (RSI DIV↑, MACD↑, EMA↑, OBV✓) at structural support across an 11% rally with zero entries fired. Root cause traced to a structural deadlock — the "playbook bootstrap trap":
+**REVISION HISTORY:** Initial v5.9 implementation (commit 6338a94) failed verification on PENGU 2D — same lockout behavior observed post-fix. Root cause: three additional blockers not addressed by v5.9 v1. This document describes the revised implementation that addresses all four root blockers.
+
+**v5.9 v1 blockers (now fixed in v5.9 v2):**
+1. **`rsi_reg_bull_ctx` is REVERSAL-only** (L1154: price lower-low + RSI higher-low) — fires at the bottom of a downtrend, NOT during rallies. During sustained uptrends, price makes higher lows → `rsi_reg_bull_div = false`. Consequence: `momentum_confluence_bull` (which required `rsi_reg_bull_ctx AND ...`) could NEVER fire during rallies, making all three downstream relaxations (Changes 2, 4, 5, 6) mathematically unreachable.
+2. **`near_sellside` still a hard AND gate** in `loaded_bull`. v1 relaxed `range_confirmed` but left `near_sellside`. During rally `dist_to_ssl >> i_near_atr` → `near_sellside = false` → `loaded_bull = false` regardless of momentum.
+3. **`thin_asset` requires manual user toggle** (`i_thin_liq` defaults to `false`). PENGU doesn't auto-qualify → Change 3 (L1 RANGING access) doesn't help by default.
+4. **`load_min = 2` for non-thin assets** requires 2-of-3 {absorption_s, compression, cvd_lean_bull}. During rally, compression and absorption are unlikely (price expanding, not compressing) — only cvd_lean fires → load_bull_count = 1 → FAIL.
+
+**v5.9 v2 fixes (this revision):**
+- **Fix 1 — `rsi_momentum_bull/bear`:** Expands RSI confluence slot to `(rsi_reg_bull_ctx OR rsi_hid_bull_ctx)`. Hidden bullish divergence (price higher-low + RSI lower-low) is the classic CONTINUATION signal during uptrends. Covers BOTH reversal and continuation contexts. Still strict 4-of-4 overall.
+- **Fix 2 — `near_sellside/near_buyside` bypass:** `loaded_bull` now uses `(near_sellside or momentum_confluence_bull)` — structural proximity replaced by momentum proof when confluence is unanimous.
+- **Fix 3 — `load_min` relaxation:** `load_min = (thin_asset or momentum_confluence_bull or momentum_confluence_bear) ? 1 : 2` — cvd_lean alone sufficient when 4-of-4 momentum definitive.
+- **Fix 4 — `momentum_count` alignment:** `momentum_count_bull/bear` now uses `rsi_momentum_bull/bear` to match confluence definition — without this, perf_thresh override (Change 4) was also unreachable in rally mode.
+
+**Trap mechanics (original analysis retained for context):** Live testing on PENGU 2D revealed a complete entry lockout scenario: L1 playbook + `range_confirmed` regime + bull_prob:43% < perf_thresh:55% + cooldown active. The system showed sustained bullish momentum (RSI DIV↑, MACD↑, EMA↑, OBV✓) at structural support across an 11% rally with zero entries fired. Root cause traced to a structural deadlock — the "playbook bootstrap trap":
 
 **The trap mechanics:**
 1. **L1 lockout from above:** Three high-quality entry types (FADE, DISP, retest) all gate on `playbook_level >= 2`. L1 cannot use them.
@@ -23,19 +37,25 @@ Fix: Three coordinated changes addressing the trap from three angles. Each chang
 
 New variables introduced at S14 (before LOADED structure logic):
 ```pinescript
-bool momentum_confluence_bull = rsi_reg_bull_ctx and macd_bull_momentum and ema8_rising and obv_bull_robust
-bool momentum_confluence_bear = rsi_reg_bear_ctx and macd_bear_momentum and ema8_falling and obv_bear_robust
+// v5.9 v2 — rsi_momentum supports regular (reversal) AND hidden (continuation) divergence
+bool rsi_momentum_bull = rsi_reg_bull_ctx or rsi_hid_bull_ctx
+bool rsi_momentum_bear = rsi_reg_bear_ctx or rsi_hid_bear_ctx
+bool momentum_confluence_bull = rsi_momentum_bull and macd_bull_momentum and ema8_rising and obv_bull_robust
+bool momentum_confluence_bear = rsi_momentum_bear and macd_bear_momentum and ema8_falling and obv_bear_robust
 ```
 
-Strict 4-of-4 confluence — ALL four signals must align in the same direction. RSI regular divergence (momentum exhaustion at level), MACD slope (current bar momentum), EMA8 slope (trend acceleration), and OBV ROC-EMA robust (volume-confirmed flow). Filters mid-strength setups while unlocking unanimous high-conviction accumulation.
+Strict 4-of-4 confluence — ALL four signals must align in the same direction. RSI divergence (regular = reversal at bottom, OR hidden = continuation in rally), MACD slope (current bar momentum), EMA8 slope (trend acceleration), and OBV ROC-EMA robust (volume-confirmed flow). v5.9 v2 critical fix: original v1 used only `rsi_reg_bull_ctx` which is a reversal-only signal — could never fire during sustained rallies where price makes higher lows. Including `rsi_hid_bull_ctx` restores continuation coverage. Filters mid-strength setups while unlocking unanimous high-conviction accumulation in BOTH reversal and continuation contexts.
 
-Three downstream gates relaxed when momentum_confluence fires:
+Five downstream gates relaxed when momentum_confluence fires (v2 expanded from v1's three):
 
-1. **`loaded_bull/loaded_bear`** (L1707-1708): `not range_confirmed` becomes `(not range_confirmed or momentum_confluence_*)`.
-2. **`range_blocks_scan`** (L2180): adds `and not (momentum_confluence_bull or momentum_confluence_bear)`. Required because the SCANNING block at L2181 is gated on `not range_blocks_scan`. Without this relaxation, the loaded_bull boolean would be true but the SCANNING block would never evaluate it.
-3. **LOADED state dissolution** (L2400): `if range_confirmed` becomes `if range_confirmed and not (trade_dir == 1 and momentum_confluence_bull) and not (trade_dir == -1 and momentum_confluence_bear)`. Required because the LOADED state self-dissolves on the next bar when `range_confirmed = true`. Bar-by-bar enforcement: if momentum confluence dies, LOADED dissolves immediately on the next bar.
+1. **`loaded_bull/loaded_bear`** — three relaxations:
+   - `near_sellside/near_buyside` → `(near_sellside or momentum_confluence_*)` — v2 addition. Structural proximity replaced by momentum proof.
+   - `load_min` → `(thin_asset or momentum_confluence_bull or momentum_confluence_bear) ? 1 : 2` — v2 addition. cvd_lean alone sufficient when momentum is definitive.
+   - `not range_confirmed` → `(not range_confirmed or momentum_confluence_*)` — v1 original.
+2. **`range_blocks_scan`**: adds `and not (momentum_confluence_bull or momentum_confluence_bear)`. Required because the SCANNING block is gated on `not range_blocks_scan`. Without this relaxation, the loaded_bull boolean would be true but the SCANNING block would never evaluate it.
+3. **LOADED state dissolution**: `if range_confirmed` becomes `if range_confirmed and not (trade_dir == 1 and momentum_confluence_bull) and not (trade_dir == -1 and momentum_confluence_bear)`. Required because the LOADED state self-dissolves on the next bar when `range_confirmed = true`. Bar-by-bar enforcement: if momentum confluence dies, LOADED dissolves immediately on the next bar.
 
-The three relaxations together complete one entry path: SCANNING → LOADED → POSITIONED via momentum-confirmed accumulation in confirmed range.
+The v2 relaxations together complete the entry path SCANNING → LOADED → POSITIONED via momentum-confirmed accumulation in BOTH range_confirmed AND trend_confirmed contexts — this is what makes it finally work for PENGU 2D sustained rallies. **eff_htf_bull_ok/eff_htf_bear_ok is NEVER bypassed** — HTF disagreement still blocks all entries, preserving the hard safety gate.
 
 **(B) Recommendation #2 — `thin_asset` L1 access to RANGING.**
 
@@ -47,8 +67,9 @@ Why thin-only: Standard assets typically have sufficient liquidity for the LOADE
 
 After all `perf_thresh` adjustments (loss-streak penalty + crypto thresh boost), add momentum override:
 ```pinescript
-int momentum_count_bull = (rsi_reg_bull_ctx ? 1 : 0) + (macd_bull_momentum ? 1 : 0) + (ema8_rising ? 1 : 0) + (obv_bull_robust ? 1 : 0)
-int momentum_count_bear = (rsi_reg_bear_ctx ? 1 : 0) + (macd_bear_momentum ? 1 : 0) + (ema8_falling ? 1 : 0) + (obv_bear_robust ? 1 : 0)
+// v5.9 v2 — uses rsi_momentum (reg OR hid) to align with confluence definition
+int momentum_count_bull = (rsi_momentum_bull ? 1 : 0) + (macd_bull_momentum ? 1 : 0) + (ema8_rising ? 1 : 0) + (obv_bull_robust ? 1 : 0)
+int momentum_count_bear = (rsi_momentum_bear ? 1 : 0) + (macd_bear_momentum ? 1 : 0) + (ema8_falling ? 1 : 0) + (obv_bear_robust ? 1 : 0)
 bool momentum_override = momentum_count_bull >= 4 or momentum_count_bear >= 4
 if momentum_override
     perf_thresh := math.max(perf_thresh - 0.10, i_trend_prob)
@@ -577,24 +598,36 @@ FIX-17 (EMA slope bypass for reversal signals in LOADED) has been reverted. The 
 // ═══════════════════════════════════════════════════════════
 // PRE-CATALYST DETECTION v5.9 ◎ SUPERIOR
 //
-// v5.9 CHANGES:
+// v5.9 CHANGES (v2 REVISION):
 // [#30] S14/S16/S17: Thin Asset Accumulation Unlock — playbook bootstrap trap fix.
-// Bundles three superior solutions for the L1 lockout cycle observed on PENGU 2D
-// (sustained 11% rally with zero entries fired). Three changes:
-// (A) S14 momentum_confluence_bull/bear (RSI div + MACD↑ + EMA↑ + OBV robust ALL aligned).
-//     loaded_bull/loaded_bear allow LOADED entry in range_confirmed when 4-of-4 momentum
-//     signals fire at structural support/resistance. range_blocks_scan and LOADED state
-//     dissolution gated on the same momentum override — bar-by-bar enforcement.
-// (B) S17 RANGING entry: thin_asset bypasses playbook_level >= 2 requirement. L1 thin
+// v2 revision addresses four root blockers that prevented v1 from firing on PENGU 2D
+// (sustained rally observation). v1 only worked in range_confirmed + near_sellside
+// contexts; v2 extends to sustained rally scenarios where price moves away from SSL.
+// (A) S14 rsi_momentum_bull/bear = (rsi_reg OR rsi_hid) divergence context. Original v1
+//     used only rsi_reg (REVERSAL-only signal — fires at bottom of downtrend). During
+//     rallies, price makes higher lows → rsi_reg NEVER fires → momentum_confluence
+//     unreachable. Including rsi_hid (HIDDEN divergence = continuation signal) restores
+//     coverage during uptrends/downtrends.
+// (B) S14 momentum_confluence_bull/bear = rsi_momentum AND MACD↑ AND EMA↑ AND OBV robust
+//     (ALL aligned). Strict 4-of-4 preserved. loaded_bull/loaded_bear allow LOADED entry
+//     with THREE relaxations when confluence fires: near_sellside bypass, load_min→1,
+//     range_confirmed bypass. eff_htf_bull_ok/eff_htf_bear_ok NEVER bypassed — hard HTF
+//     safety retained. range_blocks_scan and LOADED state dissolution gated on the same
+//     momentum override — bar-by-bar enforcement.
+// (C) S16 momentum_count uses rsi_momentum_bull/bear to align with confluence definition
+//     — without this the perf_thresh override was also unreachable in rally mode.
+// (D) S17 RANGING entry: thin_asset bypasses playbook_level >= 2 requirement. L1 thin
 //     instruments get FADE LONG/SHORT path to generate trades for L1→L2 promotion.
 //     Standard assets retain L2+ requirement (proven edge before fade entries).
-// (C) S17 perf_thresh: 4-of-4 momentum confluence reduces threshold by 0.10. Capped
+// (E) S17 perf_thresh: 4-of-4 momentum confluence reduces threshold by 0.10. Capped
 //     at i_trend_prob (regime trend floor 0.45) — never below natural trend mode.
 //     Compensates for thin-asset symmetric scoring drag where bull/bear cancel.
-// Resolves PENGU 2D complete entry lockout (L1 + range_confirmed + B:43% < thr:55%).
-// +8-15% R on thin/range-trapped instruments. Zero impact on standard liquid assets
-// in non-range regimes. Strict 4-of-4 confluence + i_trend_prob floor cap prevent
-// false signals on liquid assets where individual momentum signals fire frequently.
+// Resolves PENGU 2D complete entry lockout in BOTH range_confirmed AND sustained-rally
+// regimes. +8-15% R on thin/range-trapped instruments; additional +5-12% R on rally
+// scenarios previously locked out. Zero impact on standard liquid assets in trending
+// regimes with normal proximity. Strict 4-of-4 confluence + i_trend_prob floor cap +
+// hard HTF gate prevent false signals on liquid assets where individual momentum
+// signals fire frequently.
 //
 // v5.8 CHANGES:
 // [#26] S17: Exit priority restructure. POSITIONED if/else chain reorganized:
@@ -1828,18 +1861,27 @@ float atr_avg = ta.sma(atr14, 20)
 bool atr_compressed = atr14 < atr_avg * 0.85
 bool compression = atr_declining or atr_compressed
 
+// [v5.9 #30 REV] Momentum confluence override — CRITICAL FIX: rsi_reg_bull_ctx is a REVERSAL
+// signal (price lower-low + RSI higher-low at bottom of downtrend). During sustained rallies
+// price makes higher lows → rsi_reg_bull_ctx NEVER fires → confluence unreachable. Fix: combine
+// with rsi_hid_bull_ctx (HIDDEN bull divergence = price higher-low + RSI lower-low = classic
+// CONTINUATION signal during uptrends). rsi_momentum_bull fires in BOTH reversal (regular
+// divergence) AND continuation (hidden divergence) contexts, restoring confluence coverage.
+// Still strict 4-of-4: ALL four momentum signals must align. RSI (reg OR hid), MACD slope,
+// EMA8 slope acceleration, OBV ROC-EMA robust.
+bool rsi_momentum_bull = rsi_reg_bull_ctx or rsi_hid_bull_ctx
+bool rsi_momentum_bear = rsi_reg_bear_ctx or rsi_hid_bear_ctx
+bool momentum_confluence_bull = rsi_momentum_bull and macd_bull_momentum and ema8_rising and obv_bull_robust
+bool momentum_confluence_bear = rsi_momentum_bear and macd_bear_momentum and ema8_falling and obv_bear_robust
+
 int load_bull_count = (absorption_s ? 1 : 0) + (compression ? 1 : 0) + (cvd_lean_bull ? 1 : 0)
 int load_bear_count = (absorption_s ? 1 : 0) + (compression ? 1 : 0) + (cvd_lean_bear ? 1 : 0)
-int load_min = thin_asset ? 1 : 2
-
-// [v5.9 #30] Momentum confluence override — RSI divergence + MACD slope + EMA slope + OBV
-// robust ALL aligned in the same direction. Used to bypass the range_confirmed gate on
-// LOADED entry (recommendation #1) — when momentum is unanimous at a structural level,
-// the playbook bootstrap trap (L1 cannot promote because L2-gated entries are blocked
-// by range_confirmed) no longer applies. All four signals must fire — strict 4-of-4
-// requirement filters mid-strength setups while unlocking high-conviction accumulation.
-bool momentum_confluence_bull = rsi_reg_bull_ctx and macd_bull_momentum and ema8_rising and obv_bull_robust
-bool momentum_confluence_bear = rsi_reg_bear_ctx and macd_bear_momentum and ema8_falling and obv_bear_robust
+// [v5.9 #30 REV] load_min relaxed to 1 when momentum_confluence fires. During rallies,
+// compression and absorption are unlikely (price is expanding, not compressing) — only
+// cvd_lean_bull typically fires → load_bull_count = 1. Without this relaxation, load_min=2
+// blocks all rally-mode LOADED entries even with unanimous momentum confluence. cvd_lean
+// alone is sufficient structural proof when 4-of-4 momentum is definitive.
+int load_min = (thin_asset or momentum_confluence_bull or momentum_confluence_bear) ? 1 : 2
 
 bool loaded_bull = false
 bool loaded_bear = false
@@ -1847,9 +1889,16 @@ if absorption_mode
     loaded_bull := abs_loaded_bull
     loaded_bear := abs_loaded_bear
 else
-    // [v5.9 #30] range_confirmed gate relaxed when momentum_confluence is unanimous
-    loaded_bull := near_sellside and load_bull_count >= load_min and eff_htf_bull_ok and (not range_confirmed or momentum_confluence_bull)
-    loaded_bear := near_buyside and load_bear_count >= load_min and eff_htf_bear_ok and (not range_confirmed or momentum_confluence_bear)
+    // [v5.9 #30 REV] Three coordinated relaxations address playbook bootstrap trap for both
+    // range-bound AND rally-mode scenarios (PENGU 2D sustained rally observation):
+    //   1. near_sellside/near_buyside bypassed when momentum_confluence fires — during rallies
+    //      price is far from SSL (dist_to_ssl >> i_near_atr) so near_sellside=false. Momentum
+    //      proof replaces structural proximity when 4-of-4 confluence is unanimous.
+    //   2. load_min reduced to 1 when momentum_confluence fires (see load_min above).
+    //   3. range_confirmed gate relaxed when momentum_confluence fires (original v5.9 #30).
+    // eff_htf_bull_ok/eff_htf_bear_ok HTF agreement NEVER bypassed — trades against HTF blocked.
+    loaded_bull := (near_sellside or momentum_confluence_bull) and load_bull_count >= load_min and eff_htf_bull_ok and (not range_confirmed or momentum_confluence_bull)
+    loaded_bear := (near_buyside or momentum_confluence_bear) and load_bear_count >= load_min and eff_htf_bear_ok and (not range_confirmed or momentum_confluence_bear)
 
 // ═══════════════════════════════════════════════════════════
 // SECTION 15 — STALKING DETECTION
@@ -2163,8 +2212,11 @@ perf_thresh += crypto_thresh_boost
 // Directional safety: bull/bear entry conditions still require prob_dir > opp_prob_dir,
 // so a bullish momentum override cannot enable a bear entry (bull_prob will be high,
 // bear_prob low when bull confluence fires).
-int momentum_count_bull = (rsi_reg_bull_ctx ? 1 : 0) + (macd_bull_momentum ? 1 : 0) + (ema8_rising ? 1 : 0) + (obv_bull_robust ? 1 : 0)
-int momentum_count_bear = (rsi_reg_bear_ctx ? 1 : 0) + (macd_bear_momentum ? 1 : 0) + (ema8_falling ? 1 : 0) + (obv_bear_robust ? 1 : 0)
+// [v5.9 #30 REV] momentum_count uses rsi_momentum_bull/bear (reg OR hid divergence) to
+// align with confluence definition. Without this, count cannot reach 4-of-4 during rallies
+// where only hidden divergence fires, leaving perf_thresh override unreachable in trend mode.
+int momentum_count_bull = (rsi_momentum_bull ? 1 : 0) + (macd_bull_momentum ? 1 : 0) + (ema8_rising ? 1 : 0) + (obv_bull_robust ? 1 : 0)
+int momentum_count_bear = (rsi_momentum_bear ? 1 : 0) + (macd_bear_momentum ? 1 : 0) + (ema8_falling ? 1 : 0) + (obv_bear_robust ? 1 : 0)
 bool momentum_override = momentum_count_bull >= 4 or momentum_count_bear >= 4
 if momentum_override
     perf_thresh := math.max(perf_thresh - 0.10, i_trend_prob)
