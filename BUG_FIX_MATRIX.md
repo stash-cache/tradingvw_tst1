@@ -411,6 +411,65 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   at exit time (range vs trend vs reversal) instead of layering three
   parallel branches into the `exit_loss` block.
 
+### BUG-N — Thin-asset cooldown is too long on higher intraday TFs
+- **Where**: `ghost_wick_v4.5_source.md:253` (`eff_cooldown` derivation),
+  `187` (`i_cooldown` default of 5), `1293` (`cooldown_active` gate),
+  `2584` (dashboard).
+- **Symptom**: `i_cooldown` defaults to 5 bars. On 2H that is 10 hours
+  between trades; on thin/volatile assets 2-3 bars is usually enough
+  for the book to reset. The current scaling only halves the cooldown
+  on daily-plus TFs (`is_daily_plus`), not for thin-asset mode on
+  intraday — so thin 2H charts inherit the default.
+- **Severity**: LOW — settings tuning, not a correctness bug. Didn't
+  block in the referenced case because enough time had passed, but
+  generally relevant and will block on shorter gaps between stops.
+- **Proposed change**: Add a thin-mode branch to the `eff_cooldown`
+  derivation (still at line 253):
+  ```pinescript
+  int eff_cooldown = is_daily_plus
+      ? math.max(math.round(i_cooldown / 2), 2)
+      : thin_asset
+          ? math.max(math.round(i_cooldown / 2), 2)  // 2-3 bars
+          : i_cooldown
+  ```
+  Alternative: expose a dedicated `i_thin_cooldown` input so the user
+  can tune it without affecting default-mode instruments.
+- **Status**: OPEN. Lowest priority — ship with the next routine
+  settings-tuning pass rather than as its own patch.
+
+### BUG-O — DISP LONG gate blocks L3 + recent-loss displacement entries
+- **Where**: `ghost_wick_v4.5_source.md:1529` (FIX-12 direct displacement
+  retest from SCANNING requires `playbook_level >= 2`).
+- **Symptom**: At `playbook_level == 3` with a recent stop-out, a clean
+  displacement breakout still has to pass the `playbook_level >= 2`
+  gate. The gate was originally meant to hold L1 instruments behind
+  the retest infrastructure until they prove out — but at L3 the
+  instrument has already proven out, and on a recent-loss bar the
+  system should *prefer* the displacement path (higher conviction,
+  clearer invalidation) over waiting for another pullback.
+- **Severity**: MED — opens the displacement path during post-loss
+  scenarios where it is most valuable. Compounds with BUG-K / BUG-M
+  on the same bars.
+- **Proposed fix**: Split the gate so L3 + recent-loss bypasses the
+  `playbook_level >= 2` requirement:
+  ```pinescript
+  bool disp_gate_ok = playbook_level >= 2
+      or (playbook_level >= 3
+          and bar_index - last_exit_bar <= eff_cooldown * 2
+          and last_trade_r < 0)
+  if trade_state == 0 and bar_confirmed and not cooldown_active
+      and not stop_too_tight and disp_gate_ok and not absorption_mode
+      // FIX-12 direct displacement retest block
+  ```
+  Note: this interacts with BUG-I (bootstrap promotion) — if BUG-I
+  auto-promotes to L2 on a blocked L1, the L3-recent-loss bypass here
+  remains separate because it is a per-signal relaxation at L3, not a
+  level promotion.
+- **Status**: OPEN. Pair with the post-loss router (BUG-J/K/M) so the
+  displacement bypass and the state-0/4/5 routing are reasoned about
+  together — both are about "what the system does on the bar after a
+  stop when context is still good."
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -447,3 +506,9 @@ the candidates identified in section 5 to fill them (subject to user confirm):
 9. FIX-19 (adaptive displacement target) is referenced by BUG-L but
    not yet specified in this matrix or source. Add a PENDING FIX-19
    entry as soon as the spec lands — BUG-L depends on it.
+10. BUG-O (L3 + recent-loss displacement bypass) lands with the
+    post-loss router work from action 8. The bypass is a per-signal
+    relaxation at L3, not a level promotion, so it sits alongside the
+    BUG-I bootstrap escape without conflicting.
+11. BUG-N (thin-asset cooldown) defers to the next settings-tuning
+    pass — low priority, no correctness impact.
