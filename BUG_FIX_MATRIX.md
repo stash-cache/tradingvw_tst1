@@ -470,6 +470,100 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   together — both are about "what the system does on the bar after a
   stop when context is still good."
 
+### BUG-P — L1 thin asset: strong momentum confluence locked out by `not range_confirmed`
+- **Where**: `ghost_wick_v4.5_source.md:1043-1044` (LOADED gate).
+- **Symptom**: `loaded_bull` / `loaded_bear` both require
+  `not range_confirmed`. On thin L1 instruments where the chart is
+  mechanically `range_confirmed` (two BSL touches + two SSL touches
+  per section 13), LOADED can never fire — even when RSI divergence,
+  MACD↑, EMA↑, and OBV✓ all align at structural support. Combined
+  with the bootstrap trap (BUG-I) this is the "can't enter, can't
+  promote, can't prove out" lockout.
+- **Severity**: CRITICAL (breaks the bootstrap lockout when the
+  momentum stack is clearly giving an edge but structural range
+  definition keeps the gate closed).
+- **Proposed fix**: Allow LOADED when the momentum confluence is
+  overwhelming, even inside a confirmed range:
+  ```pinescript
+  int momentum_stack_bull = (rsi_reg_bull_ctx ? 1 : 0)
+      + (macd_bull_momentum ? 1 : 0)
+      + (ema8_rising ? 1 : 0)
+      + (obv_bull_robust ? 1 : 0)
+  bool strong_momentum_bull = momentum_stack_bull >= 3 and near_sellside
+  loaded_bull := near_sellside and load_bull_count >= load_min
+      and eff_htf_bull_ok and (not range_confirmed or strong_momentum_bull)
+  ```
+  Mirror on the bear side with `rsi_reg_bear_ctx`, `macd_bear_momentum`,
+  `ema8_falling`, `obv_bear_robust`. Keep the stack threshold at 3-of-4
+  so a single lagging indicator can't unlock the bypass alone.
+- **Status**: OPEN — CRITICAL. Pair with BUG-I (bootstrap escape)
+  and BUG-R (momentum-override threshold) since all three are about
+  "when momentum confluence overrules a structural gate."
+
+### BUG-Q — Thin-asset FADE gate blocks L1 entry on 2D+ timeframes
+- **Where**: `ghost_wick_v4.5_source.md:1412` (range fade entry
+  requires `playbook_level >= 2`).
+- **Symptom**: Thin instruments on 2D+ TFs depend on the range-fade
+  path as the *primary* entry mechanism — there simply aren't enough
+  bars to accumulate the 5 completed L1 trades needed to promote to
+  L2. The current `>= 2` gate treats fades as a "graduated" entry
+  class, creating an unreachable path for exactly the instruments
+  that need it most.
+- **Severity**: HIGH (unreachable primary entry on a class of charts;
+  a non-fix pins thin 2D+ instruments to dormant).
+- **Proposed fix**: Thin-asset specialisation at the gate:
+  ```pinescript
+  bool fade_gate_ok = thin_asset ? playbook_level >= 1 : playbook_level >= 2
+  if trade_state == 0 and bar_confirmed and range_confirmed
+      and not cooldown_active and not stop_too_tight
+      and fade_gate_ok and not absorption_mode
+      trade_state := -1
+  ```
+  Keep the L2 default for non-thin instruments since range fades on
+  those benefit from the L1 proving-out phase. On thin, the proving
+  out *is* the fade path.
+- **Status**: OPEN. Low-risk change — scope is thin-mode only, so
+  non-thin regression surface is minimal.
+
+### BUG-R — Momentum override on probability threshold
+- **Where**: `ghost_wick_v4.5_source.md:1299-1308` (`perf_thresh`
+  computation).
+- **Symptom**: `perf_thresh` is driven by `regime_thresh` + loss-streak
+  bumps. There is no downward override when momentum confluence is
+  overwhelming, so charts where `bull_prob = 0.43` with 4+ aligning
+  momentum signals are rejected against the 0.55 range ceiling even
+  though every momentum indicator agrees.
+- **Severity**: HIGH (real-world example: B:43% qualifies if
+  momentum confluence overrides the threshold by 0.10, matching the
+  trend floor).
+- **Proposed fix**: Temporarily relax the threshold floor by 0.10
+  when 4+ of the momentum stack align, capped at `i_trend_prob`
+  (so the override can't dip below the trend floor even on weaker
+  confluence):
+  ```pinescript
+  int momentum_override_bull = (rsi_reg_bull_ctx ? 1 : 0)
+      + (macd_bull_momentum ? 1 : 0)
+      + (ema8_rising ? 1 : 0)
+      + (obv_bull_robust ? 1 : 0)
+      + (cvd_bull_ctx ? 1 : 0)
+  int momentum_override_bear = (rsi_reg_bear_ctx ? 1 : 0)
+      + (macd_bear_momentum ? 1 : 0)
+      + (ema8_falling ? 1 : 0)
+      + (obv_bear_robust ? 1 : 0)
+      + (cvd_bear_ctx ? 1 : 0)
+  float momentum_override = (momentum_override_bull >= 4 or momentum_override_bear >= 4)
+      ? 0.10 : 0.0
+  perf_thresh := math.max(perf_thresh - momentum_override, i_trend_prob)
+  ```
+  Apply *after* the loss-streak adjustments so the streak tightening
+  still works, but before the `crypto_thresh_boost`. Expose the stack
+  count in the dashboard Row 6 so the user can see when the override
+  is active.
+- **Status**: OPEN. HIGH priority. Pair with BUG-P (LOADED bypass
+  under momentum confluence) and BUG-F (rev_bull_ctx weight) since
+  all three touch "how the system handles overwhelming directional
+  stacks that the current gates suppress."
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -512,3 +606,15 @@ the candidates identified in section 5 to fill them (subject to user confirm):
     BUG-I bootstrap escape without conflicting.
 11. BUG-N (thin-asset cooldown) defers to the next settings-tuning
     pass — low priority, no correctness impact.
+12. BUG-P / BUG-Q / BUG-R form the "momentum-confluence override"
+    cluster — when overwhelming momentum agrees, the system should
+    not be pinned behind structural (range_confirmed), progression
+    (playbook_level), or statistical (perf_thresh) gates. Design the
+    momentum-stack score once (section-5 common helper
+    `momentum_stack_bull` / `_bear`) and consume it from all three
+    sites rather than reimplementing the stack each time. This also
+    makes the dashboard override-indicator trivial.
+13. BUG-P is CRITICAL and should be prioritised after BUG-B / BUG-C
+    ship — it is the single item most likely to unlock a stuck L1
+    thin instrument and is therefore the highest-leverage user-
+    visible fix in the backlog.
