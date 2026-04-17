@@ -206,9 +206,18 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   ```
 - **Status**: OPEN. Low priority unless regression testing flags it.
 
-### BUG-H — Asymmetric HTF scoring (carried forward as Bug #10)
-- **Where**: `ghost_wick_v4.5_source.md:594-604` (bias resolution),
-  `1141-1144` / `1191-1194` (probability weighting).
+### BUG-H — Asymmetric HTF scoring (carried forward as Bug #10) + systemic symmetric-scoring root cause
+- **Where (primary)**: `ghost_wick_v4.5_source.md:594-604` (bias
+  resolution), `1141-1144` / `1191-1194` (HTF probability weighting).
+- **Where (systemic expansion — same root cause)**:
+  - `1097-1102` — `abs_supply_depleting` adds to both `bp` and `sp`
+    (tracked separately as BUG-D; same symptom family).
+  - `1113-1116` — `compression and absorption_s` / either adds to
+    both sides via `w_struct` multipliers.
+  - `1117-1119` — `abs_volume_expansion` adds to both sides.
+  - `1132-1134` — `bb_squeeze_ctx` adds to both sides.
+  - `1155-1156` / `1205-1206` — thin-asset `+0.10` bonus adds to
+    both sides (tracked separately as BUG-U).
 - **Symptom**: `htf_bull_ok` / `htf_bear_ok` collapse Daily + 4H into a
   single boolean via `i_htf_strict` (AND) or 4H-only (implicit OR with the
   Daily bias ignored). `eff_htf_bull_ok` then contributes a full `w_htf`
@@ -217,8 +226,19 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   On charts where D / 4H / 1H are *all bullish*, any short-bias pocket at
   one TF can still lift `sp` — bear weight should not accrue at all when
   the majority of TFs align bull.
+- **Systemic framing**: HTF is the most visible instance of a wider
+  pattern — many probability components (volume expansion, BB squeeze,
+  compression, thin bonus, absorption supply-depleting) add to *both*
+  `bp` and `sp` symmetrically. Each component individually reads as
+  "market condition present, relevant to both sides" but cumulatively
+  they lift the loser's score as fast as the winner's, depressing
+  `conviction_ok` (`abs(bp - sp) >= eff_conv_spread`) and rejecting
+  directional entries. The per-component fixes (BUG-D, BUG-H, BUG-U)
+  each move the needle; only the system-wide pass closes the gap.
 - **Observed effect from the shared chart**: B:52-55% would fall to 43%
-  under a majority-alignment weighting.
+  under a majority-alignment weighting. Expanded system-wide, the
+  estimated reduction is -2 to -3 false signals across all assets —
+  the single highest-impact false-signal reduction in the backlog.
 - **Severity**: HIGH (system-wide mis-weighting; depresses conviction
   spread and pushes valid bull entries below `i_conv_spread`).
 - **Proposed fix**: Score HTF as a single majority-alignment vote, not
@@ -233,10 +253,17 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   // |htf_align| < 2 stays neutral — no weight to either side
   ```
   Keep `eff_htf_bull_ok` / `eff_htf_bear_ok` as gates for LOADED, but
-  replace the weight call-sites with the majority vote.
+  replace the weight call-sites with the majority vote. Once HTF is
+  asymmetric, audit every "add to both `bp` and `sp`" site and decide
+  per-component: (a) make it directional (add only to the side that
+  matches the signal's bias), (b) make it net-zero (add a small bonus
+  to one side if the other side is low), or (c) leave symmetric with
+  a documented justification.
 - **Status**: OPEN. System-wide — requires regression across the full
   instrument panel. Pair with BUG-B (absorption HTF overlap) since both
-  touch the "which side gets HTF weight" question.
+  touch the "which side gets HTF weight" question. BUG-D and BUG-U are
+  the first two per-component follow-ups; budget for 2-4 more once the
+  audit runs.
 
 ### BUG-I — Promotion bypass after N bars of blocked entries
 - **Where**: `ghost_wick_v4.5_source.md:2057-2083` (L1 promotion requires
@@ -632,6 +659,49 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   blind OBV in any regime). Both touch the thin-vs-default branch
   selection in their respective code paths.
 
+### BUG-U — Thin-asset `+0.10` bonus is symmetric (adds to both sides)
+- **Where**: `ghost_wick_v4.5_source.md:1155-1156` (bull branch),
+  `1205-1206` (bear branch).
+  ```pinescript
+  if thin_asset
+      bp += 0.10
+  ...
+  if thin_asset
+      sp += 0.10
+  ```
+- **Symptom**: The thin-asset bonus is meant to lift probabilities
+  closer to `perf_thresh` because thin instruments structurally score
+  lower (less volume, noisier CVD/OBV). Adding `+0.10` to *both* sides
+  preserves the threshold-reaching benefit but also dilutes the
+  directional signal — `bull_prob - bear_prob` is unchanged, so
+  `conviction_ok` fails at the same rate as before.
+- **Severity**: LOW — estimated -0.5 to -1 false signals per thin
+  instrument. Small effect individually; matters as part of the
+  BUG-H systemic pattern (symmetric scoring across multiple
+  components compounds into meaningful conviction suppression).
+- **Proposed fix**: Add the bonus only to the dominant side so the
+  threshold-reaching benefit is preserved without diluting the
+  spread:
+  ```pinescript
+  if thin_asset and bp > sp
+      bp += 0.10
+  else if thin_asset and sp > bp
+      sp += 0.10
+  // ties stay symmetric (both unchanged) — neither side has an edge
+  ```
+  Put this *after* all other scoring additions so the dominant side
+  is computed from the fully-accumulated `bp` / `sp` (not partial
+  values mid-block). That requires moving the thin bonus from the
+  current mid-block position (1155/1205) to the end of the
+  non-absorption scoring branch, just before `bull_prob` / `bear_prob`
+  are finalised at line 1241-1242.
+- **Status**: OPEN. LOW priority on its own, but worth bundling with
+  the BUG-H system-wide audit since it is the same "symmetric scoring
+  dilutes direction" pattern. Sequence: BUG-H first (HTF), then audit
+  pass (BUG-D for supply-depleting, BUG-U for thin bonus), then the
+  remaining components flagged in BUG-H's "where (systemic expansion)"
+  list.
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -696,3 +766,13 @@ the candidates identified in section 5 to fill them (subject to user confirm):
     bypass is already carrying the conviction. Sequence the edits
     so BUG-P defines `strong_momentum_bull/bear`, then BUG-S gates
     the `load_min` tightening with `not strong_momentum_*`.
+16. Treat BUG-H as a *systemic* work-item, not just an HTF fix.
+    After the HTF majority-vote lands, run a scoring-audit pass
+    across every `bp += ... / sp += ...` pair in section 16 and
+    decide per component: (a) directional (only the matching side),
+    (b) net-zero (bonus only to the side that's low), (c) leave
+    symmetric with a documented justification. BUG-D and BUG-U are
+    the first two per-component follow-ups; the BUG-H "where
+    (systemic expansion)" list names the remaining candidates.
+    Estimated delta: -2 to -3 false signals across all assets — the
+    single highest-leverage false-signal reduction in the backlog.
