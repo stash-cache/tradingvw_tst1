@@ -564,6 +564,74 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   all three touch "how the system handles overwhelming directional
   stacks that the current gates suppress."
 
+### BUG-S — Thin `load_min = 1` is too permissive in range regime
+- **Where**: `ghost_wick_v4.5_source.md:1035` (`int load_min = thin_asset ? 1 : 2`),
+  consumed at `1043-1044` in the LOADED gate.
+- **Symptom**: Thin assets pass LOADED with a single confluence factor
+  (any one of `absorption_s` / `compression` / `cvd_lean_*`). In a
+  range regime (`adx_val < i_adx_range`) that is the lowest-conviction
+  setup the system can produce — weak structure plus a single
+  supporting signal — and it fires false range entries at the edges
+  of the BSL/SSL band.
+- **Severity**: MED — estimated -1 to -2 false signals per thin
+  instrument; compounds because they come inside structurally
+  confirmed ranges where the trend-based filters are dormant.
+- **Proposed fix**: Keep `load_min = 1` only when ADX is firmly in
+  the trend regime. Otherwise require the non-thin 2-of-3:
+  ```pinescript
+  int load_min = thin_asset and adx_val > i_adx_trend ? 1 : 2
+  ```
+  This preserves the original thin-mode intent (fewer bars = fewer
+  chances to collect confluence in a real trend) while closing the
+  range-regime hole. If even two factors is too strict for very
+  thin instruments, gate via `adx_val < i_adx_range ? 2 : 1`
+  instead so it only tightens in the range regime.
+- **Status**: OPEN. Interacts with BUG-P (LOADED momentum bypass):
+  if BUG-P ships first, BUG-S should not tighten `load_min` for bars
+  where the momentum bypass is already carrying the conviction. Gate
+  the tightening behind `not strong_momentum_bull/bear` once BUG-P is
+  in.
+
+### BUG-T — Thin OBV gate is a full bypass, not a divergence guard
+- **Where**: `ghost_wick_v4.5_source.md:1249-1250` (gate
+  definition), consumed at `1662`, `1687`, `1782`.
+- **Symptom**: For thin crypto the gate reads
+  `(is_crypto and not thin_asset) ? obv_bull_robust : true` — thin
+  assets skip OBV entirely. That catches the "thin assets can't
+  produce `obv_robust` because volume is noisy" case, but it also
+  admits the *worst* entries: opening a long while OBV is actively
+  falling (counter-flow). The gate is binary (strong confirm vs no
+  check) with no middle option.
+- **Severity**: MED — estimated -1 to -2 false signals per thin
+  instrument. Counter-flow entries are disproportionately the ones
+  that stop out quickly because institutional distribution is
+  visible in OBV before it's visible in price.
+- **Proposed fix**: Replace the `true` branch with a relaxed
+  "not divergent" check — OBV is allowed unless it is actively
+  opposing trade direction:
+  ```pinescript
+  bool obv_not_divergent_bull = not obv_div_bull_warn
+      and obv_roc_ema >= 0  // not falling
+  bool obv_not_divergent_bear = not obv_div_bear_warn
+      and obv_roc_ema <= 0  // not rising
+
+  bool obv_gate_bull = not vol_data_ok ? true
+      : (is_crypto and not thin_asset) ? obv_bull_robust
+      : obv_not_divergent_bull
+  bool obv_gate_bear = not vol_data_ok ? true
+      : (is_crypto and not thin_asset) ? obv_bear_robust
+      : obv_not_divergent_bear
+  ```
+  This uses infrastructure already defined at lines 474-476
+  (`obv_div_bull_warn`, `obv_div_bear_warn`, `obv_roc_ema`) so no new
+  indicator is needed. The gate now rejects only the clearly-bad
+  cases and passes the noisy-but-neutral ones that thin assets
+  produce most of the time.
+- **Status**: OPEN. Pair with BUG-S: together they close the two
+  main thin-mode quality holes (over-permissive LOADED in range,
+  blind OBV in any regime). Both touch the thin-vs-default branch
+  selection in their respective code paths.
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -618,3 +686,13 @@ the candidates identified in section 5 to fill them (subject to user confirm):
     ship — it is the single item most likely to unlock a stuck L1
     thin instrument and is therefore the highest-leverage user-
     visible fix in the backlog.
+14. BUG-S and BUG-T form the "thin-mode quality" pair — together they
+    close the two main thin-mode holes (range-regime over-permissive
+    LOADED, OBV blind spot). Ship together and measure on thin
+    crypto panels (1D+ and 2D+) so the -1 to -2 false-signal
+    improvements are visible in the regression delta.
+15. BUG-S must be reconciled with BUG-P: the LOADED tightening for
+    range regime should *not* apply on bars where the BUG-P momentum
+    bypass is already carrying the conviction. Sequence the edits
+    so BUG-P defines `strong_momentum_bull/bear`, then BUG-S gates
+    the `load_min` tightening with `not strong_momentum_*`.
