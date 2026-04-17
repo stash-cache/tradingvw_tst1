@@ -206,6 +206,107 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   ```
 - **Status**: OPEN. Low priority unless regression testing flags it.
 
+### BUG-H — Asymmetric HTF scoring (carried forward as Bug #10)
+- **Where**: `ghost_wick_v4.5_source.md:594-604` (bias resolution),
+  `1141-1144` / `1191-1194` (probability weighting).
+- **Symptom**: `htf_bull_ok` / `htf_bear_ok` collapse Daily + 4H into a
+  single boolean via `i_htf_strict` (AND) or 4H-only (implicit OR with the
+  Daily bias ignored). `eff_htf_bull_ok` then contributes a full `w_htf`
+  (and a further `+0.05` off-kill-zone bonus) to `bp` independently of
+  whether the bear side is also adding `w_htf` via the same mechanism.
+  On charts where D / 4H / 1H are *all bullish*, any short-bias pocket at
+  one TF can still lift `sp` — bear weight should not accrue at all when
+  the majority of TFs align bull.
+- **Observed effect from the shared chart**: B:52-55% would fall to 43%
+  under a majority-alignment weighting.
+- **Severity**: HIGH (system-wide mis-weighting; depresses conviction
+  spread and pushes valid bull entries below `i_conv_spread`).
+- **Proposed fix**: Score HTF as a single majority-alignment vote, not
+  per-TF independently. Sketch:
+  ```pinescript
+  int htf_align = (htfd_bias_bull?1:0) + (htf4h_bias_bull?1:0) + (ema_is_bull?1:0)
+                - (htfd_bias_bear?1:0) - (htf4h_bias_bear?1:0) - (ema_is_bear?1:0)
+  if htf_align >= 2
+      bp += w_htf
+  else if htf_align <= -2
+      sp += w_htf
+  // |htf_align| < 2 stays neutral — no weight to either side
+  ```
+  Keep `eff_htf_bull_ok` / `eff_htf_bear_ok` as gates for LOADED, but
+  replace the weight call-sites with the majority vote.
+- **Status**: OPEN. System-wide — requires regression across the full
+  instrument panel. Pair with BUG-B (absorption HTF overlap) since both
+  touch the "which side gets HTF weight" question.
+
+### BUG-I — Promotion bypass after N bars of blocked entries
+- **Where**: `ghost_wick_v4.5_source.md:2057-2083` (L1 promotion requires
+  `level_trades >= 5`).
+- **Symptom**: Bootstrap trap — if every entry path is blocked (kill zone,
+  conviction, RR, prob-threshold, OBV gate, etc.), `level_trades` never
+  increments and the system is pinned at L1 indefinitely. Instruments that
+  need L2+ to unlock the retest / direct-scan paths (see FIX-10, FIX-12)
+  never reach them, so the probationary L2 behavior is unreachable on
+  quiet charts.
+- **Severity**: MED (time-based escape; no direct P&L corruption but
+  silently disables features that could rescue the chart).
+- **Proposed fix**: Add a time-based auto-promotion with revocation on
+  first loss:
+  ```pinescript
+  var int blocked_since = 0
+  blocked_since := (trade_state == 0 and cooldown_active == false and level_trades == 0)
+      ? blocked_since + 1 : blocked_since
+  bool bootstrap_escape = playbook_level == 1 and blocked_since > eff_cooldown * 2
+      and every_path_blocked  // scanner that ORs the rejection reasons
+  if bootstrap_escape
+      playbook_level := 2
+      level_trades := 0
+      level_wins := 0
+      level_r_start := total_r
+      // probationary flag — revert on first loss
+      var bool probation = true
+  // in loss-handling branch:
+  if probation and exit_loss
+      playbook_level := 1
+      probation := false
+  ```
+  Key detail: `every_path_blocked` must be a composite that proves
+  the blockage is structural (not just cooldown).
+- **Status**: OPEN. Wire `every_path_blocked` first — it needs visibility
+  into *why* each entry path declined to fire this bar.
+
+### BUG-J — Post-loss CONT re-entry drops continuation context
+- **Where**: `ghost_wick_v4.5_source.md:1849-1870` (POSITIONED stop-out
+  path clears `is_cont_trade` and drops `trade_state := 0`),
+  `1891-1894` (only the *win* path promotes to CONT state 4).
+- **Symptom**: When a continuation trade stops out, the next bar has to
+  re-qualify from SCANNING(0). Until ADX rises back above `i_adx_trend`
+  and the next pullback forms, the system cannot re-attack the trend, so
+  mid-trend shakeouts cost more than their nominal 1R — they also cost
+  the *next* entry that would have ridden the continuation.
+- **Severity**: HIGH (hands back trend equity on every stop, which is the
+  dominant loss mode in trend regimes).
+- **Proposed fix** (same shape as the 2H proposal from the prior session):
+  on an `exit_loss` within trend context, route to `trade_state := 4`
+  (CONT watch) instead of `0`, with the same timeout/invalidation guards
+  that already exist for the TP2→4 promotion. Sketch:
+  ```pinescript
+  bool cont_eligible_after_loss = not is_range_trade and not is_abs_trade
+      and trend_confirmed and playbook_level >= 3
+      and ((trade_dir == 1 and eff_htf_bull_ok) or (trade_dir == -1 and eff_htf_bear_ok))
+  // inside the exit_loss branch:
+  if cont_eligible_after_loss
+      trade_state := 4
+      trade_dir := saved_dir_for_cont
+  else
+      trade_state := 0
+  ```
+- **Severity**: HIGH — already proposed for the 2H case in the prior
+  session; the fix generalises once `adx_val` crosses `i_adx_trend` on
+  any TF, so the same patch benefits this chart too.
+- **Status**: OPEN. Ship together with FIX-17 redesign and BUG-F, since
+  all three govern how reversal / continuation signals translate into
+  re-entry after a loss.
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -224,3 +325,12 @@ the candidates identified in section 5 to fill them (subject to user confirm):
    measured jointly to isolate side effects.
 4. Revisit FIX-17 and BUG-F as one work-item: the reversal fingerprint
    needs a unified confluence policy, not two disjoint weight paths.
+5. BUG-H (HTF majority alignment) is system-wide — stage it behind a
+   feature flag (`i_htf_majority = input.bool(false, ...)`) so a full
+   instrument-panel regression can be run before flipping the default.
+6. BUG-I (promotion bypass) depends on a new `every_path_blocked`
+   scanner — build that first; it is also diagnostically useful on its
+   own and should surface in the dashboard row 9 "Guards" string.
+7. BUG-J (post-loss CONT re-entry) lands together with FIX-17 redesign
+   and BUG-F — all three are about how the system recovers directional
+   context after a counter-trend hit.
