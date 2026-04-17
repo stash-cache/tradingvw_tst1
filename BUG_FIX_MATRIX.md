@@ -307,6 +307,110 @@ the candidates identified in section 5 to fill them (subject to user confirm):
   all three govern how reversal / continuation signals translate into
   re-entry after a loss.
 
+### BUG-K — CONT LONG re-entry from state 0 after recent stop-out
+- **Where**: `ghost_wick_v4.5_source.md:1484-1521` (CONT direct-entry
+  from SCANNING requires a fresh `pb_pullback_bull` / `pb_pullback_bear`),
+  `1849-1870` (stop-out clears all continuation context to state 0).
+- **Symptom**: A CONT LONG that stops out within the last N bars while
+  OBV + MACD + EMA are still bullish and price is back above the
+  original entry's invalidation is treated as a full reset — the system
+  waits for a *new* pullback rather than recognising the stop-out as a
+  "false break" that confirms direction. On the reference chart this
+  missed an 11% rally because the next pullback never formed.
+- **Severity**: HIGH — directly responsible for a specific missed move;
+  narrower than BUG-J but higher-confidence fix.
+- **Proposed fix**: Add a dedicated state-0 path that fires when a
+  recent CONT stop is "rejected" by the next bar(s):
+  ```pinescript
+  var int last_cont_stop_bar = -1
+  var int last_cont_stop_dir = 0
+  var float last_cont_invalid_lvl = na
+  // in the CONT exit_loss branch, remember the context:
+  if exit_loss and is_cont_trade
+      last_cont_stop_bar := bar_index
+      last_cont_stop_dir := saved_cont_dir
+      last_cont_invalid_lvl := entry_price_at_stop
+
+  // in state 0:
+  bool cont_false_break_bull = last_cont_stop_dir == 1
+      and bar_index - last_cont_stop_bar <= N
+      and close > last_cont_invalid_lvl
+      and obv_bull_robust and macd_bull_momentum and ema8_rising
+  if cont_false_break_bull and trend_confirmed and eff_htf_bull_ok
+      // direct state 0 → 2 entry without requiring pb_pullback_bull
+  ```
+- **Status**: OPEN. Pair with BUG-J (same anchor point: the `exit_loss`
+  branch at line 1849). BUG-K handles the state-0 recovery;
+  BUG-J handles the state-4 (CONT watch) recovery. They are complementary,
+  not alternatives.
+
+### BUG-L — Relax `tpb_rr >= 1.5` for CONT continuations after recent loss
+- **Where**: `ghost_wick_v4.5_source.md:1490` (bull) and `1509` (bear).
+- **Symptom**: The fixed `tpb_rr >= 1.5` check prices the target off
+  `bsl` / `ssl` (current liquidity level). After a CONT stop-out in a
+  continuing trend, the next pullback often sits so close to `bsl` that
+  `tpb_rr` fails even though CVD + OBV confirm continuation. Entries
+  that would clear `i_min_rr` against a further-out target are rejected
+  because the target is pinned to BSL.
+- **Severity**: MED — addresses the BSL target invalidation edge case;
+  compounds with BUG-K on the same post-loss bars.
+- **Proposed fix**: When CVD/OBV confirm continuation, extend the target
+  past BSL/SSL using an adaptive multiplier, mirroring the approach
+  proposed as FIX-19 for displacement:
+  ```pinescript
+  float tpb_tgt_adaptive = trade_dir == 1
+      ? (cvd_lean_bull and obv_bull_robust ? bsl + adaptive_atr * 1.2 : bsl)
+      : (cvd_lean_bear and obv_bear_robust ? ssl - adaptive_atr * 1.2 : ssl)
+  ```
+  Keep the `>= 1.5` floor; the adaptive target lifts the numerator so
+  genuine continuations clear it. Use a slightly lower floor
+  (e.g. `>= 1.3`) only when `(cvd_lean_* and obv_*_robust)` both hold.
+- **Status**: OPEN. Depends on FIX-19 being defined first (the
+  "adaptive target like FIX-19 does for displacement" reference —
+  FIX-19 is not yet in this matrix or source; add it as a PENDING slot
+  once the displacement adaptive-target spec lands).
+
+### BUG-M — RE-ENTRY watch (state 5) never fires post-loss
+- **Where**: `ghost_wick_v4.5_source.md:1842-1847` and `1926-1930`
+  (only the `obv_flow_exit` / `exit_win` branches route into state 5;
+  the `exit_loss` branch at `1849-1870` goes to state 0).
+- **Symptom**: State 5 is the system's re-entry watch, but the only
+  transitions into it come from winning exits. After a loss with the
+  bull signal stack still intact (OBV ✓, MACD↑, EMA↑), the re-entry
+  infrastructure — `disp_retest_bull`, `micro_bull_gated`, `rev_bull`
+  at lines 1984-2005 — is never armed, so legitimate re-entries go
+  uncaught.
+- **Severity**: HIGH — directly responsible for missed re-entries on
+  charts where the first entry stops but the trend resumes.
+- **Proposed fix**: Add a post-loss arming path to state 5 with a
+  relaxed pullback definition:
+  ```pinescript
+  bool post_loss_stack_bull = trade_dir == 1 and exit_loss
+      and obv_bull_robust and macd_bull_momentum and ema8_rising
+      and eff_htf_bull_ok
+  bool post_loss_stack_bear = trade_dir == -1 and exit_loss
+      and obv_bear_robust and macd_bear_momentum and ema8_falling
+      and eff_htf_bear_ok
+  if post_loss_stack_bull or post_loss_stack_bear
+      reentry_dir := post_loss_stack_bull ? 1 : -1
+      reentry_bar := bar_index
+      trade_state := 5
+  else
+      trade_state := 0
+  ```
+  Inside state 5, relax the pullback requirement: allow any of
+  `disp_retest_*`, `micro_*_gated`, `rev_*`, or a simple
+  `close > entry_price_before_stop` confirmation bar to arm the entry.
+- **Status**: OPEN. BUG-K, BUG-J, and BUG-M are three recovery-path
+  variants:
+  - BUG-K: state-0 direct entry on "false break" confirmation.
+  - BUG-J: state-4 (CONT watch) promotion on trend-context stop.
+  - BUG-M: state-5 (re-entry watch) arming on stack-intact stop.
+  They should be designed as a unified post-loss router rather than
+  three independent patches — pick the target state from the context
+  at exit time (range vs trend vs reversal) instead of layering three
+  parallel branches into the `exit_loss` block.
+
 ## 6. Cross-cutting tech debt (tracked, not scheduled)
 
 | ID | Area | Note |
@@ -334,3 +438,12 @@ the candidates identified in section 5 to fill them (subject to user confirm):
 7. BUG-J (post-loss CONT re-entry) lands together with FIX-17 redesign
    and BUG-F — all three are about how the system recovers directional
    context after a counter-trend hit.
+8. BUG-K / BUG-L / BUG-M are the three post-loss recovery levers
+   (state-0 false-break, relaxed `tpb_rr` with adaptive target, state-5
+   re-entry arming). Design them together as a single post-loss router
+   inside the `exit_loss` branch rather than three parallel patches —
+   the router picks state-0 / state-4 / state-5 from the context at
+   exit time (trend regime, stack intactness, invalidation reclaim).
+9. FIX-19 (adaptive displacement target) is referenced by BUG-L but
+   not yet specified in this matrix or source. Add a PENDING FIX-19
+   entry as soon as the spec lands — BUG-L depends on it.
