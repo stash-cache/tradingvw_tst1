@@ -48,11 +48,16 @@ Two-gate designs were considered and rejected:
 
 **Downstream verification — every state 6 consumer checked:**
 
-- **L3055-3060 (HTF promotion to LOADED):** `htf_now_ok` still evaluated first. If stalk direction's HTF confirms, system promotes to state 1 before macro-opposition dissolution is evaluated. `stalk_conflict_count := 0` added to HTF promotion clearing. ✓
-- **L3062-3066 (timeout/structural dissolution):** `stalk_prob_diss` added as third OR condition alongside `stalk_timed` and `stalk_diss`. All three dissolution paths share the same clearing block. Counter reset included. ✓
-- **L3068-3119 (stalking entry execution):** Evaluated in separate `if trade_state == 6 and bar_confirmed` block. If dissolution fired in the earlier block (trade_state changed to 0), this block's guard fails — no entry attempt on dissolution bar. ✓
-- **L4073-4075 (dashboard state 6 display):** Unchanged. Dashboard shows "STALKING LONG/SHORT" until dissolution fires, then switches to SCANNING display on next bar. ✓
-- **State 6 entry from SCANNING (L2741-L2770):** `stalk_bull/stalk_bear` trigger state 6. On entry, system enters with `stalk_conflict_count` at 0 (or whatever it was left at from prior state 6). The counter resets to 0 on first bar where macro conflict doesn't hold — safe regardless of prior state. ✓
+- **L3166-3172 (HTF promotion to LOADED):** `htf_now_ok` evaluated first in if/else chain. If stalk direction's HTF confirms, system promotes to state 1. Dissolution is in `else if` — cannot overwrite successful promotion. `stalk_conflict_count := 0` added to HTF promotion clearing. Pre-existing v6.1 priority issue fixed: original code used independent `if` blocks where `stalk_timed/stalk_diss` could overwrite `htf_now_ok` promotion on same bar. ✓
+- **L3173-3181 (timeout/structural/macro dissolution):** `stalk_prob_diss` added as third OR condition alongside `stalk_timed` and `stalk_diss` in `else if` branch. All three dissolution paths share the same clearing block. Counter reset included. ✓
+- **L3183-3232 (stalking entry execution):** Evaluated in separate `if trade_state == 6 and bar_confirmed` block. If dissolution fired in the earlier block (trade_state changed to 0), this block's guard fails — no entry attempt on dissolution bar. ✓
+- **L2814-2829 (state 6 entry from SCANNING):** `stalk_conflict_count := 0` added to both `stalk_bull` and `stalk_bear` entry blocks. Prevents stale counter from prior stalk sessions from causing premature dissolution. Without this reset, a prior stalk that dissolved via `stalk_timed` (which does reset counter) is safe, but a prior stalk that was overwritten by `loaded_bull/loaded_bear` taking priority in the else-if chain could leave a non-zero counter. ✓
+- **L4186-4188 (dashboard state 6 display):** Unchanged. Dashboard shows "STALKING LONG/SHORT" until dissolution fires, then switches to SCANNING display on next bar. ✓
+- **L4413-4418 (NEXT cell state 6):** Updated to show `⚠CONFLICT(N/3)` countdown tag when macro-opposition counter is building. Gives trader visibility into approaching dissolution. ✓
+- **HTF mutual exclusivity (eff_htf_bull_ok vs eff_htf_bear_ok):** `htf_now_ok` requires stalk-direction HTF; `_stalk_htf_opposes` requires opposing-direction HTF. Since v5.2 Fix #15 made these mutually exclusive, both cannot be true simultaneously. The if/else guard is defense-in-depth. ✓
+- **Absorption mode interaction (L3142-3144):** Absorption stalking uses `abs_valid_range` for `stalk_diss`. Macro-opposition gates (`_stalk_prob_opposing`, `_stalk_htf_opposes`, `_stalk_cvd_opposes`) apply equally in absorption mode — same probability, HTF, and CVD variables are used regardless of mode. No absorption-specific gap. ✓
+- **State 5 interaction:** State 5 (REENTRY_WATCH) is independent — different state, different block. `stalk_conflict_count` only increments inside `trade_state == 6`. No cross-state contamination. ✓
+- **Playbook/promotion counters:** Dissolution returns to state 0 (SCANNING). No trade is opened or closed. No impact on `level_trades`, `wins`, `losses`, `total_r`, or any performance counter. ✓
 
 **Pine Script v6 compliance:**
 
@@ -71,10 +76,12 @@ Two-gate designs were considered and rejected:
 1. **New state var (1)** — `stalk_conflict_count` (Section 17, after `reentry_from_loss`).
 2. **New event flag (1)** — `stalk_prob_dissolved` (Section 17, after `shakeout_routed`).
 3. **State 6 dissolution logic** — Three-gate macro-opposition check + 3-bar sustain counter + `stalk_prob_diss` boolean (Section 17, STALKING block, after `stalk_diss` declaration).
-4. **Dissolution path update** — `stalk_prob_diss` added to existing `stalk_timed or stalk_diss` condition with event flag assignment and counter reset.
+4. **Dissolution path update** — `stalk_prob_diss` added to existing `stalk_timed or stalk_diss` condition with event flag assignment and counter reset. Changed from independent `if` to `else if` to prevent dissolution from overwriting a successful HTF promotion on the same bar (pre-existing v6.1 priority bug).
 5. **HTF promotion counter reset** — `stalk_conflict_count := 0` added to `htf_now_ok` block.
-6. **New alertcondition** — fires when macro-opposition dissolution activates.
-7. **Version strings** — v6.1 → v6.2 across header, indicator title, dashboard cell, 18 alert prefixes.
+6. **State 6 entry counter reset** — `stalk_conflict_count := 0` added to both `stalk_bull` and `stalk_bear` entry blocks. Prevents stale counter values from prior stalk sessions causing premature dissolution on new stalk entry.
+7. **Dashboard NEXT cell update** — Shows `⚠CONFLICT(N/3)` tag when macro-opposition counter is building, giving visibility into approaching dissolution.
+8. **New alertcondition** — fires when macro-opposition dissolution activates.
+9. **Version strings** — v6.1 → v6.2 across header, indicator title, dashboard cell, 18 alert prefixes.
 
 **Edge case verification:**
 
@@ -2818,6 +2825,7 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
         is_range_trade := false
         is_cont_trade := false
         is_stalk_trade := true
+        stalk_conflict_count := 0
         enter_stalk := true
     else if stalk_bear
         trade_state := 6
@@ -2826,6 +2834,7 @@ if trade_state == 0 and bar_confirmed and not cooldown_active and not stop_too_t
         is_range_trade := false
         is_cont_trade := false
         is_stalk_trade := true
+        stalk_conflict_count := 0
         enter_stalk := true
 
 if trade_state == 0 and trend_confirmed and kz_ok and playbook_level >= 3
@@ -3161,6 +3170,7 @@ if trade_state == 6
         stalk_conflict_count := 0
     bool stalk_prob_diss = stalk_conflict_count >= 3
 
+    // [v6.2] HTF promotion takes priority — if stalk direction confirms, promote to LOADED
     bool htf_now_ok = (trade_dir == 1 and eff_htf_bull_ok) or (trade_dir == -1 and eff_htf_bear_ok)
     if htf_now_ok
         trade_state := 1
@@ -3168,8 +3178,7 @@ if trade_state == 6
         is_stalk_trade := false
         enter_loaded := true
         stalk_conflict_count := 0
-
-    if stalk_timed or stalk_diss or stalk_prob_diss
+    else if stalk_timed or stalk_diss or stalk_prob_diss
         if stalk_prob_diss
             stalk_prob_dissolved := true
         trade_state := 0
@@ -4412,7 +4421,9 @@ if barstate.islast
         float stk_p2 = trade_dir==1?bull_prob:bear_prob
         float stk_t2 = math.max(perf_thresh-0.15,0.30)
         int stk_rem = math.max(math.round(i_loaded_timeout/2),5) - (bar_index-loaded_bar)
-        next_str := "STALK: " + (stk_p2 < stk_t2 ? "prob≥"+str.tostring(math.round(stk_t2*100,0))+"%" : "catalyst") + " (" + str.tostring(math.max(stk_rem,0)) + " bars)"
+        // [v6.2 STALK-CONFLICT] Show macro-opposition countdown when conflict is building
+        string _conflict_tag = stalk_conflict_count > 0 ? " ⚠CONFLICT(" + str.tostring(stalk_conflict_count) + "/3)" : ""
+        next_str := "STALK: " + (stk_p2 < stk_t2 ? "prob≥"+str.tostring(math.round(stk_t2*100,0))+"%" : "catalyst") + " (" + str.tostring(math.max(stk_rem,0)) + " bars)" + _conflict_tag
     else if trade_state == 4
         next_str := "Re-entry: watch structural pullback"
     else if promo_probation
