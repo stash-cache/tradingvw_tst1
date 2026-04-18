@@ -16,7 +16,8 @@ One new state variable: `stalk_conflict_count` (int). Three independent macro-op
 
 ```pinescript
 bool _stalk_prob_opposing = (trade_dir == 1 and bear_prob > bull_prob + 0.10) or (trade_dir == -1 and bull_prob > bear_prob + 0.10)
-bool _stalk_htf_opposes = (trade_dir == 1 and eff_htf_bear_ok) or (trade_dir == -1 and eff_htf_bull_ok)
+bool _eff_htf_neutral = not eff_htf_bull_ok and not eff_htf_bear_ok
+bool _stalk_htf_opposes = (trade_dir == 1 and (eff_htf_bear_ok or (_eff_htf_neutral and disp_d_bear and disp_4h_bear))) or (trade_dir == -1 and (eff_htf_bull_ok or (_eff_htf_neutral and disp_d_bull and disp_4h_bull)))
 bool _stalk_cvd_opposes = (trade_dir == 1 and cvd_lean_bear) or (trade_dir == -1 and cvd_lean_bull)
 bool _stalk_macro_conflict = _stalk_prob_opposing and _stalk_htf_opposes and _stalk_cvd_opposes
 ```
@@ -64,8 +65,8 @@ Two-gate designs were considered and rejected:
 
 - `var int stalk_conflict_count = 0` — standard persistent integer. No deprecated syntax.
 - `bool stalk_prob_dissolved = false` — standard event flag. No deprecated syntax.
-- All new logic uses existing variables (`bull_prob`, `bear_prob`, `eff_htf_bull_ok`, `eff_htf_bear_ok`, `cvd_lean_bull`, `cvd_lean_bear`). No new inputs, no new `request.security()` calls.
-- `_stalk_prob_opposing`, `_stalk_htf_opposes`, `_stalk_cvd_opposes`, `_stalk_macro_conflict` are local booleans inside state 6 scope — no global namespace pollution.
+- All new logic uses existing variables (`bull_prob`, `bear_prob`, `eff_htf_bull_ok`, `eff_htf_bear_ok`, `disp_d_bull`, `disp_d_bear`, `disp_4h_bull`, `disp_4h_bear`, `cvd_lean_bull`, `cvd_lean_bear`). No new inputs, no new `request.security()` calls. Display-level TF variables (`disp_d_*`, `disp_4h_*`) are already computed from existing `request.security()` calls at L1779-1801.
+- `_stalk_prob_opposing`, `_eff_htf_neutral`, `_stalk_htf_opposes`, `_stalk_cvd_opposes`, `_stalk_macro_conflict` are local booleans inside state 6 scope — no global namespace pollution.
 - 1 new `alertcondition` → 19 total. 28 visual + 19 alert = 47. Within 64 plot output limit.
 - Security call count unchanged at 18. Within 40 limit.
 
