@@ -18,14 +18,14 @@ One new state variable: `stalk_conflict_count` (int). Three independent macro-op
 bool _stalk_prob_opposing = (trade_dir == 1 and bear_prob > bull_prob + 0.10) or (trade_dir == -1 and bull_prob > bear_prob + 0.10)
 bool _eff_htf_neutral = not eff_htf_bull_ok and not eff_htf_bear_ok
 bool _stalk_htf_opposes = (trade_dir == 1 and (eff_htf_bear_ok or (_eff_htf_neutral and disp_d_bear and disp_4h_bear))) or (trade_dir == -1 and (eff_htf_bull_ok or (_eff_htf_neutral and disp_d_bull and disp_4h_bull)))
-bool _stalk_cvd_opposes = (trade_dir == 1 and cvd_lean_bear) or (trade_dir == -1 and cvd_lean_bull)
-bool _stalk_macro_conflict = _stalk_prob_opposing and _stalk_htf_opposes and _stalk_cvd_opposes
+bool _stalk_flow_unsupported = (trade_dir == 1 and not cvd_lean_bull) or (trade_dir == -1 and not cvd_lean_bear)
+bool _stalk_macro_conflict = _stalk_prob_opposing and _stalk_htf_opposes and _stalk_flow_unsupported
 ```
 
 **Gate rationale:**
 1. **`_stalk_prob_opposing`** — Opposing probability exceeds stalk-direction probability by >= 0.10. The 0.10 threshold matches the system's conviction spread design philosophy (`eff_conv_spread` default is 0.10) — established as the threshold for "meaningful directional difference." 0.05 is too sensitive (single component flip), 0.15 is too conservative (rarely materializes before timeout).
 2. **`_stalk_htf_opposes`** — `eff_htf` confirms the opposing direction, OR `eff_htf` is neutral (both false) while the actual D and 4H display timeframes both confirm the opposing direction. The neutral-zone fallback is critical because `eff_htf` auto-scales to a single timeframe and can sit in the 0.45-0.55 overlap zone reading neutral, while the actual D:BULL + 4H:BULL dashboard data clearly shows macro opposition. Without this fallback, the PENGU 3HR scenario would never dissolve — `eff_htf_bull_ok` stays false in neutral, leaving Gate 2 permanently failed.
-3. **`_stalk_cvd_opposes`** — CVD lean confirms opposing direction. Order flow momentum backs the opposing read. Without this gate, counter-trend pullbacks where probability temporarily favors opposing direction and HTF flips could trigger premature dissolution.
+3. **`_stalk_flow_unsupported`** — CVD has stopped actively confirming the stalk direction (`not cvd_lean_bear` when stalking SHORT, `not cvd_lean_bull` when stalking LONG). Passes when flow is neutral OR opposing — does NOT require flow to have fully reversed to the opposing direction. This is the correct threshold for a waiting state: a stalk is a speculation ("I think bears might take over"), and when flow has gone quiet while probability + HTF already oppose, the speculation has lost its foundation. Requiring `cvd_lean_bull` (full opposing flow) set too high a bar — CVD acceleration measures a ~5-10 bar micro-window that can show ACCEL BEAR during normal pullbacks within a macro bull structure. The gate still blocks dissolution when `cvd_lean_bear = true` (ACCEL BEAR active) — active flow confirmation means the stalk thesis is still live regardless of macro opposition.
 
 **3-bar sustain requirement:**
 
@@ -42,8 +42,12 @@ Counter increments each bar all 3 gates pass, resets to 0 when any gate fails. D
 **Why 3 gates, not 2:**
 
 Two-gate designs were considered and rejected:
-- **Probability + HTF only** (no CVD): Would dissolve during counter-trend pullbacks where probability temporarily favors opposing direction and HTF flips, but flow momentum hasn't confirmed.
-- **Probability + CVD only** (no HTF): Would dissolve when probability and CVD align on opposing side but HTF remains neutral. Without HTF confirmation, the probability lean might be noise from lower timeframe components.
+- **Probability + HTF only** (no flow gate): Would dissolve during counter-trend pullbacks where probability temporarily favors opposing direction and HTF flips, but flow still actively confirms the stalk direction. ACCEL BEAR during a macro bull pullback is a legitimate reason to hold the stalk.
+- **Probability + flow only** (no HTF): Would dissolve when probability leads and flow is neutral but HTF hasn't confirmed either direction. Without HTF confirmation, the probability lean might be noise from lower timeframe components.
+
+**Why `not cvd_lean_same_dir` instead of `cvd_lean_opposing_dir`:**
+
+The original design required CVD to fully reverse to the opposing direction (`cvd_lean_bull` when stalking SHORT). PENGU 3HR testing revealed this was too strict — CVD showed ACCEL BEAR (short-term selling pressure during a pullback in a D:BULL + 4H:BULL structure) which permanently blocked Gate 3 even though the stalk thesis was clearly invalidated by probability + HTF. The stalk is a waiting state, not a live trade — the cost is opportunity (blocked entries), not risk. For a waiting state, the correct question is "has flow stopped supporting the stalk?" not "has flow fully reversed?" When flow goes quiet (neutral) for 3 bars while prob + HTF oppose, the stalk speculation has lost its foundation.
 
 **Counter orphaning safety:** Counter only increments inside `trade_state == 6` block. If state changes externally, the `if trade_state == 6` guard prevents further increments. Counter persists but is inert — it will be reset next time state 6 is entered since the dissolution block always either increments or resets to 0.
 
@@ -57,7 +61,7 @@ Two-gate designs were considered and rejected:
 - **L4413-4418 (NEXT cell state 6):** Updated to show `⚠CONFLICT(N/3)` countdown tag when macro-opposition counter is building. Gives trader visibility into approaching dissolution. ✓
 - **HTF mutual exclusivity (eff_htf_bull_ok vs eff_htf_bear_ok):** `htf_now_ok` requires stalk-direction HTF confirmed; `_stalk_htf_opposes` requires either opposing-direction HTF confirmed OR neutral-zone with D+4H display alignment. `htf_now_ok` can only be true when `eff_htf_*_ok` confirms stalk direction — in that case `_eff_htf_neutral` is false (one side confirmed) → neutral-zone fallback doesn't fire, and the opposing `eff_htf_*_ok` is false (mutual exclusivity per v5.2 Fix #15) → `_stalk_htf_opposes` is false. The if/else chain prevents overwrite. ✓
 - **Neutral-zone fallback safety:** `disp_d_bull/bear` and `disp_4h_bull/bear` are display-only booleans from actual `request.security()` calls — they represent real timeframe data, not auto-scaled approximations. Requiring BOTH D AND 4H to agree prevents single-timeframe noise from triggering dissolution. ✓
-- **Absorption mode interaction (L3142-3144):** Absorption stalking uses `abs_valid_range` for `stalk_diss`. Macro-opposition gates (`_stalk_prob_opposing`, `_stalk_htf_opposes`, `_stalk_cvd_opposes`) apply equally in absorption mode — same probability, HTF, and CVD variables are used regardless of mode. No absorption-specific gap. ✓
+- **Absorption mode interaction (L3142-3144):** Absorption stalking uses `abs_valid_range` for `stalk_diss`. Macro-opposition gates (`_stalk_prob_opposing`, `_stalk_htf_opposes`, `_stalk_flow_unsupported`) apply equally in absorption mode — same probability, HTF, CVD, and display-level TF variables are used regardless of mode. No absorption-specific gap. ✓
 - **State 5 interaction:** State 5 (REENTRY_WATCH) is independent — different state, different block. `stalk_conflict_count` only increments inside `trade_state == 6`. No cross-state contamination. ✓
 - **Playbook/promotion counters:** Dissolution returns to state 0 (SCANNING). No trade is opened or closed. No impact on `level_trades`, `wins`, `losses`, `total_r`, or any performance counter. ✓
 
@@ -66,7 +70,7 @@ Two-gate designs were considered and rejected:
 - `var int stalk_conflict_count = 0` — standard persistent integer. No deprecated syntax.
 - `bool stalk_prob_dissolved = false` — standard event flag. No deprecated syntax.
 - All new logic uses existing variables (`bull_prob`, `bear_prob`, `eff_htf_bull_ok`, `eff_htf_bear_ok`, `disp_d_bull`, `disp_d_bear`, `disp_4h_bull`, `disp_4h_bear`, `cvd_lean_bull`, `cvd_lean_bear`). No new inputs, no new `request.security()` calls. Display-level TF variables (`disp_d_*`, `disp_4h_*`) are already computed from existing `request.security()` calls at L1779-1801.
-- `_stalk_prob_opposing`, `_eff_htf_neutral`, `_stalk_htf_opposes`, `_stalk_cvd_opposes`, `_stalk_macro_conflict` are local booleans inside state 6 scope — no global namespace pollution.
+- `_stalk_prob_opposing`, `_eff_htf_neutral`, `_stalk_htf_opposes`, `_stalk_flow_unsupported`, `_stalk_macro_conflict` are local booleans inside state 6 scope — no global namespace pollution.
 - 1 new `alertcondition` → 19 total. 28 visual + 19 alert = 47. Within 64 plot output limit.
 - Security call count unchanged at 18. Within 40 limit.
 
@@ -89,12 +93,12 @@ Two-gate designs were considered and rejected:
 
 | Scenario | Behavior |
 |----------|----------|
-| **Stalk SHORT, B:52% S:33%, D:BULL, 4H:BULL, CVD lean bull** | All 3 gates pass. Counter increments to 3 over 3 bars (9 hours on 3HR). Dissolution fires. System returns to SCANNING, can immediately load longs. |
+| **Stalk SHORT, B:52% S:33%, D:BULL, 4H:BULL, CVD neutral** | All 3 gates pass (prob spread 0.19, HTF opposes, flow not confirming short). Counter increments to 3 over 3 bars (9 hours on 3HR). Dissolution fires. System returns to SCANNING, can immediately load longs. |
+| **Stalk SHORT, B:52% S:40%, D:BULL, 4H:BULL, ACCEL BEAR** | Gates 1+2 pass, Gate 3 fails — `cvd_lean_bear = true` → `not cvd_lean_bear = false`. Flow actively confirms the short thesis. Stalk survives despite macro opposition. Correct — sellers are genuinely active. |
 | **Stalk SHORT, B:45% S:40%, D:BULL** | Probability spread 0.05 < 0.10 threshold. Gate 1 fails. No dissolution — probability edge isn't decisive enough. Correct. |
-| **Stalk SHORT, B:60% S:30%, D:BULL, 4H:BULL, eff_htf neutral** | Gate 1 passes (0.30 spread). `eff_htf_bull_ok` is false but `_eff_htf_neutral` is true AND `disp_d_bull` + `disp_4h_bull` both true → Gate 2 passes via neutral-zone fallback. PENGU 3HR archetype. Correct dissolution. |
+| **Stalk SHORT, B:60% S:30%, D:BULL, 4H:BULL, eff_htf neutral, CVD lean bull** | All 3 gates pass. Gate 2 via neutral-zone fallback. Gate 3 passes (`not cvd_lean_bear` = true since CVD lean bull). PENGU 3HR archetype. Correct dissolution. |
 | **Stalk SHORT, B:60% S:30%, D:---, 4H:---** (neutral HTF, neutral display) | Gate 1 passes (0.30 spread). `eff_htf_bull_ok` is false, `_eff_htf_neutral` is true, but `disp_d_bull` and `disp_4h_bull` both false → Gate 2 fails. No dissolution — without any timeframe confirming opposition, the probability lean could be transient. Correct. |
 | **Stalk SHORT, B:60% S:30%, D:BULL, 4H:BEAR, eff_htf neutral** | Gate 2 fails — neutral-zone fallback requires BOTH `disp_d_bull` AND `disp_4h_bull`. D and 4H disagree → no dissolution. Correct — mixed macro signals. |
-| **Stalk SHORT, B:55% S:40%, D:BULL, CVD neutral** | Gates 1+2 pass, Gate 3 fails (CVD not lean bull). No dissolution — flow hasn't confirmed the opposing direction. Correct. |
 | **Stalk SHORT, macro flickers** (1 bar conflict, then resolves) | Counter reaches 1, resets to 0 on next bar. No dissolution. 3-bar sustain filters noise. |
 | **Stalk SHORT, 2 bars conflict then resolves** | Counter reaches 2, resets to 0. Still no dissolution. |
 | **Stalk promotes to LOADED (HTF confirms stalk direction)** | `htf_now_ok` fires first, promotes to state 1, resets counter. Dissolution never evaluated because `trade_state` changed. |
@@ -102,10 +106,11 @@ Two-gate designs were considered and rejected:
 
 **Expected R% improvement:**
 
-- **High-timeframe crypto (3HR, 4H, 2D):** +0.5-1.5R per stalking conflict event. Each event wastes 20-30 bars of trend equity at 3HR = 60-90 hours. Dissolution at bar 3 recovers 17-27 bars of availability for long entries. At 1-2 stalk conflicts/month on volatile assets, net +1-3R/month.
+- **High-timeframe crypto (3HR, 4H, 2D):** +1.0-2.5R per stalking conflict event. Each event wastes 20-30 bars of trend equity at 3HR = 60-90 hours. Dissolution at bar 3 (when CVD goes neutral) recovers 17-27 bars of availability for trend-direction entries. The relaxed CVD gate (`not cvd_lean_same_dir` vs prior `cvd_lean_opposing_dir`) increases dissolution frequency by ~40-60% — stalks that previously survived because CVD was neutral (neither confirming nor opposing) now dissolve when paired with prob + HTF opposition. At 2-4 stalk conflicts/month on volatile assets (up from 1-2 with strict gate), net +2-5R/month.
+- **PENGU 3HR archetype (neutral eff_htf + ACCEL BEAR pullback):** Prior design: stalk never dissolves (Gate 2 blocked by neutral eff_htf, Gate 3 blocked by ACCEL BEAR). Current design: Gate 2 passes via D+4H fallback. Gate 3 passes once ACCEL BEAR fades to neutral flow (~3-6 bars after selling pressure subsides). Dissolution fires 9-18 hours earlier than timeout. Estimated recovery: +0.5-1.5R per event from longs that would have been blocked.
 - **Fast timeframes (15m, 30m):** Minimal impact. Stalk timeout is shorter (fewer bars), and HTF transitions occur over more bars relative to stalk duration.
-- **Instruments with frequent HTF regime shifts (altcoins, meme coins):** Highest impact. These assets trigger stalking signals that are quickly contradicted by HTF regime changes. PENGU 3HR scenario is the archetype.
-- **Risk:** Zero additional risk. Dissolution returns to SCANNING (state 0) — identical to timeout dissolution. No new entries are created, no gates are relaxed.
+- **Instruments with frequent HTF regime shifts (altcoins, meme coins):** Highest impact. These assets trigger stalking signals that are quickly contradicted by HTF regime changes.
+- **Risk:** Zero additional risk. Dissolution returns to SCANNING (state 0) — identical to timeout dissolution. No new entries are created, no gates are relaxed. The CVD gate still blocks dissolution when `cvd_lean_bear/bull` actively confirms the stalk direction — only neutral or opposing flow allows dissolution.
 
 ---
 
@@ -3168,8 +3173,9 @@ if trade_state == 6
     // Gate 2: eff_htf confirms opposing direction, OR eff_htf is neutral while actual D+4H both confirm opposing
     bool _eff_htf_neutral = not eff_htf_bull_ok and not eff_htf_bear_ok
     bool _stalk_htf_opposes = (trade_dir == 1 and (eff_htf_bear_ok or (_eff_htf_neutral and disp_d_bear and disp_4h_bear))) or (trade_dir == -1 and (eff_htf_bull_ok or (_eff_htf_neutral and disp_d_bull and disp_4h_bull)))
-    bool _stalk_cvd_opposes = (trade_dir == 1 and cvd_lean_bear) or (trade_dir == -1 and cvd_lean_bull)
-    bool _stalk_macro_conflict = _stalk_prob_opposing and _stalk_htf_opposes and _stalk_cvd_opposes
+    // Gate 3: flow has stopped confirming the stalk direction (neutral or opposing — not actively supporting)
+    bool _stalk_flow_unsupported = (trade_dir == 1 and not cvd_lean_bull) or (trade_dir == -1 and not cvd_lean_bear)
+    bool _stalk_macro_conflict = _stalk_prob_opposing and _stalk_htf_opposes and _stalk_flow_unsupported
     if _stalk_macro_conflict
         stalk_conflict_count := stalk_conflict_count + 1
     else
@@ -4471,5 +4477,5 @@ alertcondition(exit_win, "✓ WIN", "v6.2: trade closed in profit")
 alertcondition(exit_loss, "✗ EXIT", "v6.2: stopped or invalidated")
 alertcondition(escape_ready, "↑ L1→L2 ESCAPE", "v6.2: probationary L1→L2 promotion escape — bootstrap trap breaker")
 alertcondition(shakeout_routed, "○ SHAKEOUT WATCH", "v6.2: CONT stop-out routed to shakeout re-entry watch — trend + HTF + CVD intact")
-alertcondition(stalk_prob_dissolved, "⊙ STALK DISSOLVED", "v6.2: stalking dissolved — probability + HTF + CVD oppose stalk direction for 3 bars")
+alertcondition(stalk_prob_dissolved, "⊙ STALK DISSOLVED", "v6.2: stalking dissolved — probability + HTF oppose stalk direction + flow unsupported for 3 bars")
 ```
