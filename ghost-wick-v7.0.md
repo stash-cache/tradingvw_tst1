@@ -17,6 +17,32 @@
 - No new variables, no new `request.security()` calls, no plot budget impact
 - `eq_lo/hi_nearby` NOT shared despite appearing in both tracks: absorption uses flat 0.05, standard uses `w_liq * 0.44` (different weight)
 
+**Signal-by-signal audit (88 contribution lines verified):**
+- Absorption mode bull (bp): 18 contributions → 4 base + 14 abs = 18 ✓
+- Absorption mode bear (sp): 18 contributions → 4 base + 14 abs = 18 ✓
+- Standard mode bull (bp): 26 contributions → 4 base + 22 std = 26 ✓
+- Standard mode bear (sp): 26 contributions → 4 base + 22 std = 26 ✓
+- Double-scoring check: 0 signals appear in BOTH base AND track addend ✓
+- Nesting preservation: `eff_htf_bull_ok → +0.05` nested guard retained in std addend ✓
+
+**R% improvement: 0.00% (pure structural refactor)**
+- No entry/exit behavior change → no R impact
+- Purpose: architectural prerequisite for Phase 2-5 dual-track execution
+- Verification: dashboard B:/S: percentages must be IDENTICAL to v6.9 on all TFs
+
+**Downstream logic implications: NONE**
+- All 50+ downstream references read `bull_prob`/`bear_prob` (unchanged interface)
+- `bp`/`sp` intermediate variables are not referenced downstream (verified by grep)
+- `conviction_ok`, `perf_thresh`, all entry gates, exit conditions — zero changes needed
+- New variables (`base_bp`, `base_sp`, `abs_bp`, `abs_sp`, `std_bp`, `std_sp`) are local to S16, not consumed elsewhere
+
+**Edge cases verified:**
+1. **`eff_htf_bull_ok` mode dependency:** Variable is pre-computed (L2519) with mode-conditional value. Shared base reads the SAME boolean regardless of track. Unused track's addend computes with it but gets discarded at routing. No behavioral difference.
+2. **Both tracks compute every bar:** `abs_bp`/`std_bp` both accumulate on every bar (no wrapping `if`). Only the routing ternary selects. No side effects in addend blocks (pure arithmetic). Pine Script compiler optimizes dead paths.
+3. **`else if` chain integrity:** All chains (`Wyckoff E > D > C`, `CVD tiered`, `thin/KZ/ADX`, `compression/struct`, `sweep/OB`) preserved at correct indentation with proper `else if` linkage.
+4. **Duplicate `demand_zone_fresh`/`supply_zone_fresh` scoring (L3224 + L3238 / L3275 + L3289):** Intentional in v6.9 — first `+= 0.06`, second `+= 0.04`. Preserved identically in v7.0 std addend.
+5. **Mode transition mid-bar:** `absorption_mode` is a `bool` derived from `effective_mode` which uses 10-bar hysteresis. Even if mode changes, the routing uses the CURRENT bar's boolean — same as v6.9.
+
 ### v6.9 — Absorption Macro Filter (ABS-FILTER) — False Accumulation Suppression
 
 **[ABS-FILTER] S12 Absorption LOADED + S15 Stalking + S16 Probability: Suppress absorption bull/bear entries when ≥3 of 4 display TFs unanimously oppose** — During waterfall declines, brief consolidation pauses create conditions that mechanically satisfy Wyckoff accumulation criteria: `abs_higher_lows` fires from bounce swing lows, `abs_supply_depleting` fires from declining volume during the pause, and `abs_valid_range` from the consolidation shelf itself. The system enters LOADED state and triggers absorption long entries that immediately get stopped out when the trend resumes.
