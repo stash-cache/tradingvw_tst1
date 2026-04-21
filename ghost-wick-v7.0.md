@@ -5300,7 +5300,7 @@ if barstate.islast
     string class_tag = absorption_mode ? "A" : thin_asset ? "T" : entry_class==1?"μ":entry_class==2?"δ":l1_phase==1?"μ?":"δ?"
     string lvl_str = absorption_mode ? (abs_no_edge ? "ABS:NO EDGE" : "ABS:" + str.tostring(abs_wins+abs_losses) + "t") : (dormant_rec ? "DORMANT" : "L" + str.tostring(playbook_level) + class_tag)
 
-    table.cell(d, 0, 0, "GHOST WICK v6.9 ◎", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black,35))
+    table.cell(d, 0, 0, "GHOST WICK v7.0 ◎", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black,35))
     table.cell(d, 1, 0, st_str + " [" + regime_str + "] " + lvl_str + " " + mode_label, text_color=st_col, text_size=size.normal, bgcolor=color.new(color.black,35))
 
     // Row 1: Direction — [v5.5 #22] All labels use actual timeframe data via display-only request.security().
@@ -5550,24 +5550,24 @@ if barstate.islast
 // [v6.0 #5] +1 alertcondition for probationary L1→L2 escape → 17 total.
 // [v6.1 BUG-J] +1 alertcondition for shakeout routing → 18 total.
 // [v6.2 STALK-CONFLICT] +1 alertcondition for macro-opposition dissolution → 19 total. Within v6 plot budget (64).
-alertcondition(enter_long, "◉ LONG", "v6.9: trend long entry")
-alertcondition(enter_short, "◉ SHORT", "v6.9: trend short entry")
-alertcondition(enter_range_long, "◉ FADE LONG", "v6.9: range fade long")
-alertcondition(enter_range_short,"◉ FADE SHORT", "v6.9: range fade short")
-alertcondition(enter_cont_long, "◉ CONT LONG", "v6.9: continuation long")
-alertcondition(enter_cont_short, "◉ CONT SHORT", "v6.9: continuation short")
-alertcondition(enter_disp_long, "◉ DISP LONG", "v6.9: displacement breakout long — trend + RVOL + CVD + body dominance")
-alertcondition(enter_disp_short, "◉ DISP SHORT", "v6.9: displacement breakout short — trend + RVOL + CVD + body dominance")
-alertcondition(enter_abs_long, "◉ ABSORB LONG", "v6.9: absorption breakout/spring long")
-alertcondition(enter_abs_short, "◉ ABSORB SHORT", "v6.9: absorption breakout/upthrust short")
-alertcondition(move_to_manage, "◈ TP1 HIT", "v6.9: partial TP, trailing")
-alertcondition(obv_exit_fired, "◈ OBV EXIT", "v6.9: OBV flow exit — distribution detected")
-alertcondition(rev_exit_fired, "◈ REV EXIT", "v6.9: Reversal exit — REV + RSI divergence against trade while in profit")
-alertcondition(macro_exit_fired, "◈ MACRO EXIT", "v6.9: Macro reversal exit — all 4 display TFs unanimously oppose trade direction while in profit for 2+ bars")
-alertcondition(retest_reentry, "◉ RE-ENTRY", "v6.9: retest re-entry at structural zone")
-alertcondition(exit_win, "✓ WIN", "v6.9: trade closed in profit")
-alertcondition(exit_loss, "✗ EXIT", "v6.9: stopped or invalidated")
-alertcondition(escape_ready, "↑ L1→L2 ESCAPE", "v6.9: probationary L1→L2 promotion escape — bootstrap trap breaker")
-alertcondition(shakeout_routed, "○ SHAKEOUT WATCH", "v6.9: CONT stop-out routed to shakeout re-entry watch — trend + HTF + CVD intact")
-alertcondition(stalk_prob_dissolved, "⊙ STALK DISSOLVED", "v6.9: stalking dissolved — probability + HTF oppose stalk direction + flow unsupported for 3 bars")
+alertcondition(enter_long, "◉ LONG", "v7.0: trend long entry")
+alertcondition(enter_short, "◉ SHORT", "v7.0: trend short entry")
+alertcondition(enter_range_long, "◉ FADE LONG", "v7.0: range fade long")
+alertcondition(enter_range_short,"◉ FADE SHORT", "v7.0: range fade short")
+alertcondition(enter_cont_long, "◉ CONT LONG", "v7.0: continuation long")
+alertcondition(enter_cont_short, "◉ CONT SHORT", "v7.0: continuation short")
+alertcondition(enter_disp_long, "◉ DISP LONG", "v7.0: displacement breakout long — trend + RVOL + CVD + body dominance")
+alertcondition(enter_disp_short, "◉ DISP SHORT", "v7.0: displacement breakout short — trend + RVOL + CVD + body dominance")
+alertcondition(enter_abs_long, "◉ ABSORB LONG", "v7.0: absorption breakout/spring long")
+alertcondition(enter_abs_short, "◉ ABSORB SHORT", "v7.0: absorption breakout/upthrust short")
+alertcondition(move_to_manage, "◈ TP1 HIT", "v7.0: partial TP, trailing")
+alertcondition(obv_exit_fired, "◈ OBV EXIT", "v7.0: OBV flow exit — distribution detected")
+alertcondition(rev_exit_fired, "◈ REV EXIT", "v7.0: Reversal exit — REV + RSI divergence against trade while in profit")
+alertcondition(macro_exit_fired, "◈ MACRO EXIT", "v7.0: Macro reversal exit — all 4 display TFs unanimously oppose trade direction while in profit for 2+ bars")
+alertcondition(retest_reentry, "◉ RE-ENTRY", "v7.0: retest re-entry at structural zone")
+alertcondition(exit_win, "✓ WIN", "v7.0: trade closed in profit")
+alertcondition(exit_loss, "✗ EXIT", "v7.0: stopped or invalidated")
+alertcondition(escape_ready, "↑ L1→L2 ESCAPE", "v7.0: probationary L1→L2 promotion escape — bootstrap trap breaker")
+alertcondition(shakeout_routed, "○ SHAKEOUT WATCH", "v7.0: CONT stop-out routed to shakeout re-entry watch — trend + HTF + CVD intact")
+alertcondition(stalk_prob_dissolved, "⊙ STALK DISSOLVED", "v7.0: stalking dissolved — probability + HTF oppose stalk direction + flow unsupported for 3 bars")
 ```
