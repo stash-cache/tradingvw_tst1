@@ -3427,8 +3427,8 @@ bool wvs_absorbing_bear = _wvs_bear_stage >= 1
 bool wvs_no_prep_bull = _wvs_step3_bull and _wvs_bull_stage < 2
 bool wvs_no_prep_bear = _wvs_step3_bear and _wvs_bear_stage < 2
 // Low volume on impulse bars = exhaustion, not conviction
-bool wvs_exhaustion_bull = _wvs_up_bar and _wvs_vol_low and _wvs_body_pct >= 0.55 and trend_confirmed
-bool wvs_exhaustion_bear = _wvs_down_bar and _wvs_vol_low and _wvs_body_pct >= 0.55 and trend_confirmed
+bool wvs_exhaustion_bull = _wvs_up_bar and _wvs_vol_low and _wvs_body_pct >= 0.55 and trend_adx_ok
+bool wvs_exhaustion_bear = _wvs_down_bar and _wvs_vol_low and _wvs_body_pct >= 0.55 and trend_adx_ok
 
 // OBV pivot direction for absorption
 float obv_pivot_hi = ta.pivothigh(obv_val, 5, 5)
